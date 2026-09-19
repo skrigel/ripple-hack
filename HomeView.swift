@@ -10,10 +10,13 @@ import SwiftData
 /// answer about last week or next Tuesday — it just isn't on screen.
 struct HomeView: View {
     @Environment(RippleServices.self) private var services
+    @Environment(\.currentCaregiver) private var currentCaregiver
 
     @Query private var facts: [GroundingFacts]
     @Query(sort: \Event.when, order: .forward) private var events: [Event]
     @Query(sort: \Conversation.startedAt, order: .forward) private var conversations: [Conversation]
+
+    @State private var eventFormMode: EventFormView.Mode?
 
     private var groundingFacts: GroundingFacts? { facts.first }
 
@@ -24,6 +27,12 @@ struct HomeView: View {
         }
         .padding(.horizontal, 20)
         .onAppear(perform: speakGreeting)
+        .sheet(item: $eventFormMode) { mode in
+            EventFormView(mode: mode)
+                .environment(\.currentCaregiver, currentCaregiver)
+                .presentationCornerRadius(Theme.sheetRadius)
+                .presentationDragIndicator(.visible)
+        }
     }
 
     // MARK: - Right now
@@ -95,14 +104,29 @@ struct HomeView: View {
             )
 
             VStack(alignment: .leading, spacing: 12) {
-                Text(GroundingService.todayIntro)
-                    .font(Theme.font(14, .medium))
-                    .foregroundStyle(Theme.mutedText)
-                    .padding(.horizontal, 4)
-                    .padding(.bottom, 2)
+                HStack {
+                    Text(GroundingService.todayIntro)
+                        .font(Theme.font(14, .medium))
+                        .foregroundStyle(Theme.mutedText)
+                    Spacer()
+                    if currentCaregiver != nil {
+                        Button { eventFormMode = .create } label: {
+                            Image(systemName: "plus.circle.fill")
+                                .font(.system(size: 18))
+                                .foregroundStyle(Theme.sage)
+                        }
+                        .accessibilityLabel("Add an event")
+                    }
+                }
+                .padding(.horizontal, 4)
+                .padding(.bottom, 2)
 
                 ForEach(entries) { entry in
-                    TimelineRow(entry: entry, hasHappened: entry.hasHappened(by: now))
+                    TimelineRow(
+                        entry: entry,
+                        hasHappened: entry.hasHappened(by: now),
+                        onEdit: currentCaregiver != nil ? editableEvent(for: entry) : nil
+                    )
                 }
             }
         }
@@ -121,6 +145,14 @@ struct HomeView: View {
             priority: .grounding
         )
     }
+
+    /// Caregiver notes and confirmations are editable; a conversation's recap
+    /// is not — editing that summary is out of scope, so those rows stay
+    /// read-only regardless of persona.
+    private func editableEvent(for entry: TimelineEntry) -> (() -> Void)? {
+        guard case .event(let event) = entry, event.source != .conversation else { return nil }
+        return { eventFormMode = .edit(event) }
+    }
 }
 
 // MARK: - Supporting views
@@ -130,6 +162,9 @@ struct HomeView: View {
 private struct TimelineRow: View {
     let entry: TimelineEntry
     let hasHappened: Bool
+    /// Present only when a caregiver is signed in and this entry is an
+    /// editable event; `nil` renders no pencil at all.
+    var onEdit: (() -> Void)? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -156,6 +191,15 @@ private struct TimelineRow: View {
             }
 
             Spacer(minLength: 8)
+
+            if let onEdit {
+                Button(action: onEdit) {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.mutedText)
+                }
+                .accessibilityLabel("Edit event")
+            }
 
             if hasHappened {
                 Text(GroundingService.timeOfDay(entry.when))

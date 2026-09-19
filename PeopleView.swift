@@ -3,21 +3,44 @@ import SwiftData
 
 struct PeopleView: View {
     @Environment(\.openURL) private var openURL
+    @Environment(\.currentCaregiver) private var currentCaregiver
     @Query(sort: \Person.sortOrder) private var people: [Person]
+
+    @State private var personCardMode: PersonContactCardView.Mode?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("The people in your life.")
-                .font(Theme.font(14))
-                .foregroundStyle(Theme.mutedText)
-                .padding(.horizontal, 4)
-                .padding(.bottom, 4)
+            HStack {
+                Text("The people in your life.")
+                    .font(Theme.font(14))
+                    .foregroundStyle(Theme.mutedText)
+                Spacer()
+                if currentCaregiver != nil {
+                    Button { personCardMode = .create(presetCaregiver: false) } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "plus.circle.fill")
+                            Text("Add person")
+                        }
+                        .font(Theme.font(13, .medium))
+                        .foregroundStyle(Theme.sage)
+                    }
+                }
+            }
+            .padding(.horizontal, 4)
+            .padding(.bottom, 4)
 
             ForEach(people) { person in
-                PersonCard(person: person) { call(person) }
+                PersonCard(
+                    person: person,
+                    onCall: { call(person) },
+                    onEdit: currentCaregiver != nil ? { personCardMode = .edit(person) } : nil
+                )
             }
         }
         .padding(.horizontal, 20)
+        .sheet(item: $personCardMode) { mode in
+            PersonContactCardView(mode: mode)
+        }
     }
 
     private func call(_ person: Person) {
@@ -30,6 +53,7 @@ struct PeopleView: View {
 private struct PersonCard: View {
     let person: Person
     let onCall: () -> Void
+    var onEdit: (() -> Void)? = nil
 
     var body: some View {
         RippleCard {
@@ -63,6 +87,17 @@ private struct PersonCard: View {
                             .foregroundStyle(Theme.secondaryText)
                     }
                     Spacer(minLength: 0)
+
+                    if let onEdit {
+                        Button(action: onEdit) {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Theme.mutedText)
+                                .frame(width: 28, height: 28)
+                                .background(Theme.muted, in: Circle())
+                        }
+                        .accessibilityLabel("Edit \(person.name)")
+                    }
                 }
 
                 Button(action: onCall) {

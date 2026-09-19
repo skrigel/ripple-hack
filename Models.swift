@@ -54,6 +54,9 @@ final class Person {
     var avatarBackgroundHex: UInt
     var avatarTintHex: UInt
     var isVisitingToday: Bool
+    /// Whether this person can act as a caregiver persona — see `PersonaSession`.
+    /// Defaulted so lightweight migration can backfill existing rows.
+    var isCaregiver: Bool = false
     var sortOrder: Int
     var lastModified: Date
 
@@ -74,6 +77,7 @@ final class Person {
         avatarBackgroundHex: UInt,
         avatarTintHex: UInt,
         isVisitingToday: Bool = false,
+        isCaregiver: Bool = false,
         sortOrder: Int,
         lastModified: Date = .now
     ) {
@@ -88,6 +92,7 @@ final class Person {
         self.avatarBackgroundHex = avatarBackgroundHex
         self.avatarTintHex = avatarTintHex
         self.isVisitingToday = isVisitingToday
+        self.isCaregiver = isCaregiver
         self.sortOrder = sortOrder
         self.lastModified = lastModified
         self.events = []
@@ -115,6 +120,10 @@ final class Event {
     /// Set when this event is the recap of a finished conversation, so the two
     /// stay linked without duplicating the summary text.
     var conversationID: UUID?
+    /// The caregiver who logged this entry, when known. Provenance, not
+    /// involvement — separate from `participants`. `nil` for patient-authored
+    /// or pre-persona data. Caregiver-facing only, like `EventSource`.
+    var createdByPersonID: UUID?
     /// Who was involved. Shares the people store with the People screen.
     @Relationship(inverse: \Person.events)
     var participants: [Person]
@@ -127,6 +136,7 @@ final class Event {
         when: Date,
         source: EventSource = .caregiverNote,
         conversationID: UUID? = nil,
+        createdByPersonID: UUID? = nil,
         participants: [Person] = [],
         lastModified: Date = .now
     ) {
@@ -136,6 +146,7 @@ final class Event {
         self.when = when
         self.sourceRaw = source.rawValue
         self.conversationID = conversationID
+        self.createdByPersonID = createdByPersonID
         self.participants = participants
         self.lastModified = lastModified
     }

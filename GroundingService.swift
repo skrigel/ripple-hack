@@ -309,43 +309,6 @@ enum GroundingService {
         return "on \(formatter.string(from: target)) \(time)"
     }
 
-    // MARK: Conversation recaps
-    //
-    // The recap is assembled here, deterministically, from the rolling digest.
-    // The model helped notice what the subjects were; it does not get to write
-    // the sentence that goes into the log and is later read back as memory.
-
-    /// What a finished conversation gets remembered as.
-    static func recap(
-        _ digest: ConversationDigest,
-        participants: [Person],
-        settings: SummarizationSettings = .default,
-        at date: Date = .now,
-        calendar: Calendar = .current
-    ) -> String {
-        guard digest.hasSubstance(minimumBeats: settings.minimumBeats) else {
-            return plainRecap(participants: participants, at: date, calendar: calendar)
-        }
-        let topics = digest.topTopics()
-        return "You had a chat with \(who(participants)) about \(list(topics.map { lowercasedFirst($0) }))."
-    }
-
-    /// The floor: true by construction, because it uses only who and when.
-    /// Written whenever there was no model, too little said, or nothing caught.
-    static func plainRecap(
-        participants: [Person],
-        at date: Date = .now,
-        calendar: Calendar = .current
-    ) -> String {
-        let part = partOfDay(at: date, calendar: calendar)
-        let when = part == "nighttime" ? "a little while ago" : "this \(part)"
-        return "You had a chat with \(who(participants)) \(when)."
-    }
-
-    private static func who(_ participants: [Person]) -> String {
-        participants.isEmpty ? "me" : list(participants.map(\.name))
-    }
-
     // MARK: Shared formatting
 
     static func timeOfDay(_ date: Date, calendar: Calendar = .current) -> String {

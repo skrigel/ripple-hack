@@ -118,6 +118,37 @@ final class ComprehensionEngine {
         )
     }
 
+    // MARK: - Summarizing a finished transcript
+
+    /// Summarizes a whole session's transcript and judges whether it is
+    /// significant enough to remember — the gate before anything is written
+    /// to the event log. Returns `nil` off-device or on any failure, so the
+    /// caller always has a deterministic fallback to reach for.
+    func summarizeSignificance(transcript: String, people: [Person]) async -> TranscriptSummary? {
+        #if canImport(FoundationModels)
+        guard #available(iOS 26, *), capability == .onDevice else { return nil }
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        do {
+            let session = LanguageModelSession(instructions: Self.summaryInstructions)
+            let roster = people.map(\.name).joined(separator: ", ")
+            let result = try await session.respond(
+                to: """
+                People in their life: \(roster.isEmpty ? "(none recorded)" : roster)
+                Transcript of a conversation:
+                \(trimmed)
+                """,
+                generating: TranscriptSummary.self
+            )
+            return result.content
+        } catch {
+            return nil
+        }
+        #else
+        return nil
+        #endif
+    }
+
     private func modelBeat(text: String, people: [Person]) async -> ConversationBeat? {
         #if canImport(FoundationModels)
         guard #available(iOS 26, *) else { return nil }
@@ -198,6 +229,14 @@ final class ComprehensionEngine {
     Only list names that appear in the list you are given. Judge tone from how \
     the person sounds: warm, calm, unsettled, or confused.
     """
+
+    private static let summaryInstructions = """
+    You summarize a conversation with an older person, for their caregiver. \
+    Write one or two short, plain sentences describing what was talked about, \
+    in the third person. Mark it significant only if it contains a specific \
+    event, plan, visit, or piece of news worth remembering later — ordinary \
+    greetings, small talk, or chat with no clear subject is not significant.
+    """
     #endif
 }
 
@@ -260,5 +299,17 @@ extension GenerableTone {
         case .confused: "confused"
         }
     }
+}
+
+/// A finished transcript, reduced to the two things the event log needs: a
+/// plain sentence, and whether it clears the bar to be remembered at all.
+@available(iOS 26, *)
+@Generable
+struct TranscriptSummary {
+    @Guide(description: "One or two short, plain sentences summarizing what was talked about, in the third person")
+    var summary: String
+
+    @Guide(description: "True only if this contains a specific event, plan, visit, or piece of news worth remembering later")
+    var isSignificant: Bool
 }
 #endif

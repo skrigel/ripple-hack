@@ -46,12 +46,15 @@ final class CompanionSession {
     private let phrasing: PhrasingEngine
     private let settings: SummarizationSettings
 
-    // Conversation state. Raw turns live here and nowhere else: they are held
-    // only until the next fold, and never written to the store.
+    // Conversation state. Raw turns live here and nowhere else, and are never
+    // written to the store. `pendingTurns` is held only until the next fold;
+    // `fullTranscript` spans the whole session so the close-time significance
+    // check can read it, and is discarded the moment the session closes.
     private var conversation: Conversation?
     private var digest = ConversationDigest()
     private var pendingTurns: [String] = []
     private var pendingCharacters = 0
+    private var fullTranscript: [String] = []
     /// How many times the person actually said something. A session where
     /// nobody spoke is not a conversation and leaves no trace.
     private var turnsHeard = 0
@@ -92,6 +95,7 @@ final class CompanionSession {
         digest = ConversationDigest()
         pendingTurns = []
         pendingCharacters = 0
+        fullTranscript = []
         turnsHeard = 0
         self.store = store
 
@@ -143,7 +147,7 @@ final class CompanionSession {
                 // entry would be a memory of something that did not happen.
                 store.context.delete(conversation)
             } else {
-                writeRecap(for: conversation, store: store)
+                await writeRecap(for: conversation, store: store)
             }
         }
 
@@ -151,23 +155,35 @@ final class CompanionSession {
         self.store = nil
         pendingTurns = []
         pendingCharacters = 0
+        fullTranscript = []
         turnsHeard = 0
         phase = .closed
     }
 
-    private func writeRecap(for conversation: Conversation, store: ConversationStore) {
+    /// Judges the whole transcript once, and only writes a summary — to the
+    /// conversation and to the event log — when the model actually judged it
+    /// significant. With no model verdict there is nothing to say that is not
+    /// already sitting in the store as plain facts (who, when), so nothing
+    /// beyond that bookkeeping gets written. The transcript itself never
+    /// reaches the store; it lives only long enough for this one call.
+    private func writeRecap(for conversation: Conversation, store: ConversationStore) async {
         let participants = digest.mentionedPeople(from: store.people)
-        let recap = GroundingService.recap(
-            digest, participants: participants, settings: settings
-        )
+        let transcript = fullTranscript.joined(separator: " ")
+        let judged = await comprehension.summarizeSignificance(transcript: transcript, people: store.people)
+
         conversation.endedAt = .now
-        conversation.summary = recap
         conversation.participants = participants
         conversation.lastModified = .now
 
+        guard let judged else { return }
+        let summary = judged.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard judged.isSignificant, !summary.isEmpty else { return }
+
+        conversation.summary = summary
+
         // The recap joins the one event log, so the day reads as one story.
         let event = Event(
-            title: recap,
+            title: summary,
             when: conversation.startedAt,
             source: .conversation,
             conversationID: conversation.id,
@@ -185,6 +201,7 @@ final class CompanionSession {
         turnsHeard += 1
         pendingTurns.append(turn)
         pendingCharacters += turn.count
+        fullTranscript.append(turn)
         restartSilenceTimer(store: store)
 
         phase = .thinking

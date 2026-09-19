@@ -56,12 +56,6 @@ struct ConversationDigest: Codable, Equatable {
 
     var isEmpty: Bool { topics.isEmpty && peopleIDs.isEmpty }
 
-    /// Whether the conversation was substantial enough to describe. Below this
-    /// there is no subject to name, and the recap falls back to the plain line.
-    func hasSubstance(minimumBeats: Int) -> Bool {
-        beatCount >= minimumBeats && !topics.isEmpty
-    }
-
     // MARK: - Folding
 
     /// Merges one beat in. Deterministic and order-stable: the same beats in
@@ -113,19 +107,6 @@ struct ConversationDigest: Codable, Equatable {
 
     // MARK: - Reading back
 
-    /// The subjects worth naming, most-dwelt-on first, ties broken by which
-    /// came up earliest. A recap names two or three things, never six.
-    func topTopics(limit: Int = 3) -> [String] {
-        topics.enumerated()
-            .sorted { left, right in
-                left.element.mentions == right.element.mentions
-                    ? left.offset < right.offset
-                    : left.element.mentions > right.element.mentions
-            }
-            .prefix(limit)
-            .map(\.element.text)
-    }
-
     /// People the conversation touched on, in the store's own order.
     func mentionedPeople(from people: [Person]) -> [Person] {
         people.filter { peopleIDs.contains($0.id) }
@@ -151,8 +132,6 @@ struct SummarizationSettings: Codable, Equatable {
     var turnsPerBeat: Int
     /// Fold early once the buffer reaches roughly this many characters.
     var charactersPerBeat: Int
-    /// Fewer folded beats than this and the recap stays the plain line.
-    var minimumBeats: Int
     /// Whether the model may extract topics. Off means comfort-topic matching
     /// only — the app still works, it just notices less.
     var usesModelExtraction: Bool
@@ -163,7 +142,6 @@ struct SummarizationSettings: Codable, Equatable {
         silenceTimeout: 90,
         turnsPerBeat: 6,
         charactersPerBeat: 600,
-        minimumBeats: 2,
         usesModelExtraction: true
     )
 }

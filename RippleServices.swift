@@ -18,6 +18,7 @@ final class RippleServices {
     let phrasing: PhrasingEngine
     let comprehension: ComprehensionEngine
     let session: CompanionSession
+    let persona: PersonaSession
 
     init() {
         let speech = SpeechManager()
@@ -30,5 +31,6 @@ final class RippleServices {
         self.session = CompanionSession(
             speech: speech, comprehension: comprehension, phrasing: phrasing
         )
+        self.persona = PersonaSession()
     }
 }

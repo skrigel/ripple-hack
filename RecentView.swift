@@ -9,7 +9,10 @@ import SwiftData
 /// complete record: gaps are expected and fine, so it never implies anything is
 /// missing.
 struct RecentView: View {
+    @Environment(\.currentCaregiver) private var currentCaregiver
     @Query(sort: \Event.when, order: .reverse) private var events: [Event]
+
+    @State private var eventFormMode: EventFormView.Mode?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -41,6 +44,12 @@ struct RecentView: View {
             }
         }
         .padding(.horizontal, 20)
+        .sheet(item: $eventFormMode) { mode in
+            EventFormView(mode: mode)
+                .environment(\.currentCaregiver, currentCaregiver)
+                .presentationCornerRadius(Theme.sheetRadius)
+                .presentationDragIndicator(.visible)
+        }
     }
 
     // MARK: - Rows
@@ -61,6 +70,15 @@ struct RecentView: View {
                 }
             }
             Spacer(minLength: 8)
+            // Conversation recaps stay read-only, matching Home's timeline.
+            if currentCaregiver != nil, event.source != .conversation {
+                Button { eventFormMode = .edit(event) } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Theme.mutedText)
+                }
+                .accessibilityLabel("Edit event")
+            }
             Text(GroundingService.timeOfDay(event.when))
                 .font(Theme.font(12))
                 .foregroundStyle(Theme.mutedText)
