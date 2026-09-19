@@ -5,9 +5,13 @@ import SwiftData
 /// questions; answers are built deterministically from the store, warmed for
 /// tone by the phrasing engine, then spoken and streamed on screen.
 struct AssistantSheet: View {
-    @Environment(SpeechManager.self) private var speech
-    @Environment(PhrasingEngine.self) private var phrasing
+    @Environment(RippleServices.self) private var services
+    @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+
+    private var speech: SpeechManager { services.speech }
+    private var phrasing: PhrasingEngine { services.phrasing }
+    private var session: CompanionSession { services.session }
 
     @Query private var facts: [GroundingFacts]
     @Query(sort: \Event.when) private var events: [Event]
@@ -25,6 +29,7 @@ struct AssistantSheet: View {
             ScrollView {
                 VStack(spacing: 28) {
                     orbAndResponse
+                    talkControl
                     chips
                 }
                 .padding(.horizontal, 20)
@@ -33,7 +38,20 @@ struct AssistantSheet: View {
             .scrollIndicators(.hidden)
         }
         .background(Theme.background)
-        .onDisappear { streamTask?.cancel() }
+        .task {
+            // Opening the sheet *is* the ask, so start listening straight away
+            // rather than making the person press a second button. If nobody
+            // speaks, the session closes itself and leaves no trace.
+            guard !session.isOpen else { return }
+            await session.open(store: conversationStore)
+        }
+        .onDisappear {
+            streamTask?.cancel()
+            // Leaving the sheet ends the conversation, and writes its recap.
+            if session.isOpen {
+                Task { await session.close(store: conversationStore) }
+            }
+        }
     }
 
     // MARK: - Header
@@ -62,24 +80,93 @@ struct AssistantSheet: View {
 
     private var orbAndResponse: some View {
         VStack(spacing: 20) {
-            AssistantOrb(isSpeaking: isStreaming)
+            AssistantOrb(isSpeaking: isStreaming || speech.isSpeaking)
 
-            if displayed.isEmpty {
-                Text("Tap a button below to ask me something.")
-                    .font(Theme.font(14))
-                    .foregroundStyle(Theme.mutedText)
-                    .multilineTextAlignment(.center)
-            } else {
+            if let spoken = currentResponse {
                 RippleCard {
-                    Text(displayed)
+                    Text(spoken)
                         .font(Theme.font(16))
                         .foregroundStyle(Theme.foreground)
                         .lineSpacing(4)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+            } else {
+                Text("Talk to me, or tap a button below to ask me something.")
+                    .font(Theme.font(14))
+                    .foregroundStyle(Theme.mutedText)
+                    .multilineTextAlignment(.center)
             }
         }
         .padding(.top, 4)
+    }
+
+    /// In a conversation the screen mirrors what was just said aloud; outside
+    /// one it mirrors the chip answer as it streams.
+    private var currentResponse: String? {
+        if session.isOpen, !session.transcriptLine.isEmpty { return session.transcriptLine }
+        return displayed.isEmpty ? nil : displayed
+    }
+
+    // MARK: - Talking out loud
+    //
+    // A conversation never starts on its own. This button is the whole ask of
+    // the person: if they never press it, the app simply knows less.
+
+    private var talkControl: some View {
+        VStack(spacing: 8) {
+            Button {
+                Task {
+                    if session.isOpen {
+                        await session.close(store: conversationStore)
+                    } else {
+                        await session.open(store: conversationStore)
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: session.isOpen ? "stop.fill" : "mic.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(session.isOpen ? "Finish talking" : "Let's talk out loud")
+                        .font(Theme.font(15, .semibold))
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(ProminentButtonStyle())
+
+            if let problem = session.listeningProblem {
+                // Listening is the only thing missing; the buttons still work.
+                Text(problem)
+                    .font(Theme.font(12))
+                    .foregroundStyle(Theme.mutedText)
+                    .multilineTextAlignment(.center)
+            } else if session.isOpen {
+                Text(listeningHint)
+                    .font(Theme.font(12))
+                    .foregroundStyle(Theme.mutedText)
+            }
+        }
+    }
+
+    private var listeningHint: String {
+        switch session.phase {
+        case .opening: "Just a moment…"
+        case .listening: session.listening.isHearingSpeech ? "I can hear you." : "I'm listening."
+        case .thinking: "Let me think."
+        case .speaking: "…"
+        case .wrappingUp: "Saving what we talked about."
+        case .closed: ""
+        }
+    }
+
+    /// The slice of the store a conversation reads from and writes back to.
+    private var conversationStore: ConversationStore {
+        ConversationStore(
+            context: modelContext,
+            facts: facts.first,
+            events: events,
+            people: people,
+            comfortTopics: comfortTopics
+        )
     }
 
     // MARK: - Quick-action chips
@@ -117,12 +204,22 @@ struct AssistantSheet: View {
         displayed = ""
         isStreaming = true
 
-        let base = response(for: prompt)
+        // Tapping a chip and asking out loud are the same question, so they
+        // resolve to the same intent and the same deterministic answer.
+        let intent = prompt.intent
+        let grounded = GroundingService.answer(
+            for: intent,
+            digest: conversationStore.groundingDigest(),
+            people: people,
+            lastSpoken: speech.lastSpoken
+        )
+
         streamTask = Task {
-            // Warm the tone if a model is available; instant fallback otherwise.
-            let text = await phrasing.warmlyRephrase(base)
+            // Sensitive lines are spoken exactly as built; everything else may
+            // have its tone warmed if a model is available.
+            let text = intent.isVerbatim ? grounded : await phrasing.warmlyRephrase(grounded)
             guard !Task.isCancelled else { return }
-            speech.speak(text)
+            speech.speak(text, priority: intent == .distress ? .grounding : .reply)
             await stream(text)
             isStreaming = false
         }
@@ -137,88 +234,13 @@ struct AssistantSheet: View {
             try? await Task.sleep(for: .milliseconds(18))
         }
     }
-
-    // MARK: - Deterministic answers from the store
-
-    private func response(for prompt: AssistantPrompt) -> String {
-        switch prompt {
-        case .time: timeResponse
-        case .happened: happenedResponse
-        case .upcoming: upcomingResponse
-        case .who: whoResponse
-        case .safe: safeResponse
-        case .chat: chatResponse
-        }
-    }
-
-    private var userName: String { facts.first?.userName ?? "there" }
-
-    /// The wider window the assistant may draw on — more than Home shows.
-    private var digest: GroundingDigest? {
-        facts.first.map {
-            GroundingDigest(facts: $0, events: events, comfortTopics: comfortTopics)
-        }
-    }
-
-    private var timeResponse: String {
-        let base = "It's \(GroundingService.timeOfDay(.now)), \(userName)."
-        guard let next = digest?.upcoming.first else { return base }
-        return base + " \(next.title) is coming up at \(GroundingService.timeOfDay(next.when))."
-    }
-
-    private var happenedResponse: String {
-        let items = (digest?.today ?? []).filter { $0.hasHappened() }
-        guard !items.isEmpty else { return "You're just getting started today, \(userName)." }
-        let phrases = items.map { "\($0.title.lowercased()) at \(GroundingService.timeOfDay($0.when))" }
-        return "You've had a lovely day so far. " + GroundingService.list(phrases).capitalizedFirst + "."
-    }
-
-    /// Reaches past today — the next thing coming up may be days away.
-    private var upcomingResponse: String {
-        let items = digest?.upcoming.prefix(3).map { $0 } ?? []
-        guard !items.isEmpty else { return "Nothing else is planned. You can rest easy." }
-        let phrases = items.map { "\($0.title.lowercased()) \(dayPhrase(for: $0.when))" }
-        return "Coming up, you have " + GroundingService.list(phrases) + "."
-    }
-
-    /// "at 3:00 pm" for today, "on Friday at 2:00 pm" beyond it.
-    private func dayPhrase(for date: Date, calendar: Calendar = .current) -> String {
-        let time = "at \(GroundingService.timeOfDay(date, calendar: calendar))"
-        guard !calendar.isDate(date, inSameDayAs: .now) else { return time }
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.dateFormat = "EEEE"
-        return "on \(formatter.string(from: date)) \(time)"
-    }
-
-    private var whoResponse: String {
-        let visiting = people.first { $0.isVisitingToday }
-        let pieces = [
-            facts.first.map { "\($0.currentCaregiverName) is \($0.currentCaregiverRelationship.lowercasedFirst)." },
-            visiting.map { "\($0.name) is coming to visit." },
-            facts.first.map { "If you need anyone else, \($0.primaryContactName) is just a phone call away." },
-        ].compactMap { $0 }
-        return pieces.isEmpty ? "You're not alone — help is always a phone call away." : pieces.joined(separator: " ")
-    }
-
-    private var safeResponse: String {
-        guard let facts = facts.first else { return "You are safe. Everything is okay." }
-        return "You are safe, \(facts.userName). You're at \(facts.homeLabel), \(facts.roomLabel). Everything is okay."
-    }
-
-    /// Opens a conversation from a caregiver-noted comfort topic. This is the
-    /// one place the app *steers* rather than reports — and it still only ever
-    /// draws on what a caregiver entered.
-    private var chatResponse: String {
-        guard let topic = comfortTopics.first else {
-            return "I'd love to hear about your day, \(userName). What's on your mind?"
-        }
-        let opener = "Tell me about \(topic.title.lowercasedFirst), \(userName)."
-        return topic.detail.isEmpty ? opener : opener + " I'd love to hear about it."
-    }
 }
 
-/// The fixed set of things the person can ask.
+/// The fixed set of things the person can ask by tapping.
+///
+/// A chip is just a question asked without speaking, so each one maps to the
+/// same `QueryIntent` the spoken path produces. The answer comes from one
+/// place, and the rule about which lines skip the model applies to both.
 enum AssistantPrompt: String, CaseIterable, Identifiable {
     case time, happened, upcoming, who, safe, chat
 
@@ -234,17 +256,16 @@ enum AssistantPrompt: String, CaseIterable, Identifiable {
         case .chat: "Let's talk about something nice"
         }
     }
-}
 
-private extension String {
-    var capitalizedFirst: String {
-        guard let first else { return self }
-        return first.uppercased() + dropFirst()
-    }
-
-    var lowercasedFirst: String {
-        guard let first else { return self }
-        return first.lowercased() + dropFirst()
+    var intent: QueryIntent {
+        switch self {
+        case .time: .whatTime
+        case .happened: .whatHappenedToday
+        case .upcoming: .whatsComingUp
+        case .who: .whoIsHere
+        case .safe: .amISafe
+        case .chat: .comfortChat(nil)
+        }
     }
 }
 

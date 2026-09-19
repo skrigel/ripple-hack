@@ -9,7 +9,7 @@ import SwiftData
 /// than this in the store (see `GroundingDigest`) so the assistant can still
 /// answer about last week or next Tuesday — it just isn't on screen.
 struct HomeView: View {
-    @Environment(SpeechManager.self) private var speech
+    @Environment(RippleServices.self) private var services
 
     @Query private var facts: [GroundingFacts]
     @Query(sort: \Event.when, order: .forward) private var events: [Event]
@@ -23,7 +23,7 @@ struct HomeView: View {
             todaySection
         }
         .padding(.horizontal, 20)
-        .onAppear(perform: speakGrounding)
+        .onAppear(perform: speakGreeting)
     }
 
     // MARK: - Right now
@@ -110,13 +110,16 @@ struct HomeView: View {
 
     // MARK: - Speech
 
-    private func speakGrounding() {
+    /// Opening the app is not a question, so it is not answered like one.
+    /// A greeting says someone is here without reciting where they are —
+    /// the full orientation line is there when it is asked for, and is spoken
+    /// on the "Where am I?" and "Am I safe?" paths.
+    private func speakGreeting() {
         guard let facts = groundingFacts else { return }
-        speech.speak(GroundingService.spokenGrounding(
-            facts: facts,
-            recent: GroundingService.past(events, before: .now, limit: 1).first,
-            at: .now
-        ))
+        services.speech.speak(
+            GroundingService.greeting(for: facts.userName, at: .now),
+            priority: .grounding
+        )
     }
 }
 
@@ -198,6 +201,6 @@ private struct TimelineRow: View {
 #Preview {
     ScrollView { HomeView() }
         .background(Theme.background)
-        .environment(SpeechManager())
+        .environment(RippleServices())
         .modelContainer(previewContainer)
 }

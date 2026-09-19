@@ -3,9 +3,9 @@ import SwiftData
 
 @main
 struct RippleApp: App {
-    /// Shared services live for the whole app: one voice, one phrasing engine.
-    @State private var speech = SpeechManager()
-    @State private var phrasing = PhrasingEngine()
+    /// One voice, one ear, and the two engines that may hold a model —
+    /// comprehension facing in, phrasing out. See `RippleServices`.
+    @State private var services = RippleServices()
 
     private let container: ModelContainer
 
@@ -21,8 +21,7 @@ struct RippleApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environment(speech)
-                .environment(phrasing)
+                .environment(services)
         }
         .modelContainer(container)
     }

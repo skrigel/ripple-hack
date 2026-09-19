@@ -25,6 +25,7 @@ enum AppTab: String, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
+    @Environment(RippleServices.self) private var services
     @Query private var facts: [GroundingFacts]
 
     @State private var tab: AppTab = .home
@@ -51,6 +52,11 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showingAssistant) {
             AssistantSheet()
+                // A sheet is built outside this view's tree, so the services
+                // are handed over explicitly rather than assumed to be
+                // inherited. Same instances — this is a re-injection, not a
+                // second set.
+                .environment(services)
                 .presentationDetents([.fraction(0.8)])
                 .presentationCornerRadius(Theme.sheetRadius)
                 .presentationDragIndicator(.visible)
@@ -137,8 +143,7 @@ struct ContentView: View {
 
 #Preview {
     ContentView()
-        .environment(SpeechManager())
-        .environment(PhrasingEngine())
+        .environment(RippleServices())
         .modelContainer(previewContainer)
 }
 

@@ -168,6 +168,184 @@ enum GroundingService {
             : conversation.summary
     }
 
+    // MARK: Spoken answers
+    //
+    // One function per intent. Every sentence below is assembled from records
+    // that were already true — the interpreter only chose which one to build.
+
+    /// The true answer to a understood question.
+    ///
+    /// `lastSpoken` is passed in rather than read from the voice so this stays
+    /// pure: the same inputs always produce the same sentence.
+    static func answer(
+        for intent: QueryIntent,
+        digest: GroundingDigest,
+        people: [Person],
+        lastSpoken: String = "",
+        at date: Date = .now,
+        calendar: Calendar = .current
+    ) -> String {
+        let facts = digest.facts
+        switch intent {
+        case .whereAmI:
+            return "You're at \(facts.homeLabel), \(facts.userName) — in \(facts.roomLabel). "
+                + "It's \(weekdayAndPartOfDay(at: date, calendar: calendar))."
+
+        case .whatTime:
+            let base = "It's \(timeOfDay(date, calendar: calendar)), on a \(weekdayAndPartOfDay(at: date, calendar: calendar))."
+            guard let next = digest.upcoming.first else { return base }
+            return base + " \(sentenceCased(next.title)) is at \(timeOfDay(next.when, calendar: calendar))."
+
+        case .whatHappenedToday:
+            return happenedToday(digest, at: date, calendar: calendar)
+
+        case .whatsComingUp:
+            return comingUp(digest, at: date, calendar: calendar)
+
+        case .whoIsHere:
+            return whoIsHere(facts: facts, people: people)
+
+        case .aboutPerson(let id):
+            guard let person = people.first(where: { $0.id == id }) else {
+                return unsure(digest, facts: facts)
+            }
+            return about(person)
+
+        case .amISafe:
+            return "You are safe, \(facts.userName). You're at \(facts.homeLabel), "
+                + "\(facts.roomLabel). Everything is okay."
+
+        case .comfortChat(let id):
+            let topic = id.flatMap { identifier in digest.comfortTopics.first { $0.id == identifier } }
+                ?? digest.comfortTopics.first
+            guard let topic else {
+                return "I'd love to hear about your day, \(facts.userName). What's on your mind?"
+            }
+            return "Tell me about \(lowercasedFirst(topic.title)), \(facts.userName). I'd love to hear about it."
+
+        case .repeatThat:
+            return lastSpoken.isEmpty
+                ? "I hadn't said anything yet, \(facts.userName). You're at \(facts.homeLabel), and all is well."
+                : lastSpoken
+
+        case .distress:
+            return reassurance(facts: facts)
+
+        case .unclear:
+            return unsure(digest, facts: facts)
+        }
+    }
+
+    /// How a conversation opens. Short on purpose: the person pressed the
+    /// button because they have something to ask, so this gets out of the way.
+    static func conversationOpener(facts: GroundingFacts) -> String {
+        "I'm listening, \(facts.userName)."
+    }
+
+    /// The verbatim line for a frightened moment. Facts and a person to call —
+    /// nothing else, and never near a model.
+    static func reassurance(facts: GroundingFacts) -> String {
+        "You are safe, \(facts.userName). You're at \(facts.homeLabel), and I'm right here with you. "
+            + "\(facts.currentCaregiverName) is \(lowercasedFirst(facts.currentCaregiverRelationship)), "
+            + "and \(facts.primaryContactName) is just a phone call away."
+    }
+
+    /// Who this person is to them, in the caregiver's own words.
+    static func about(_ person: Person) -> String {
+        var line = "\(person.name) is \(lowercasedFirst(person.relationship))."
+        if !person.recentContext.isEmpty { line += " \(sentenceCased(person.recentContext))." }
+        if let memory = person.memories.first { line += " You two share \(lowercasedFirst(memory))." }
+        return line
+    }
+
+    /// When we did not catch the question. True, calm, and hands back a thread
+    /// worth pulling rather than admitting failure.
+    static func unsure(_ digest: GroundingDigest, facts: GroundingFacts) -> String {
+        let base = "I'm not quite sure about that one, \(facts.userName) — but you're safe here at \(facts.homeLabel)."
+        guard let topic = digest.comfortTopics.first else { return base }
+        return base + " Shall we talk about \(lowercasedFirst(topic.title))?"
+    }
+
+    private static func happenedToday(
+        _ digest: GroundingDigest, at date: Date, calendar: Calendar
+    ) -> String {
+        let done = digest.today.filter { $0.hasHappened(by: date) }
+        guard !done.isEmpty else {
+            return "You're just getting started today, \(digest.facts.userName). It's been a quiet morning."
+        }
+        let phrases = done.map { "\(lowercasedFirst($0.title)) at \(timeOfDay($0.when, calendar: calendar))" }
+        return "You've had a good day so far. " + sentenceCased(list(phrases)) + "."
+    }
+
+    private static func comingUp(
+        _ digest: GroundingDigest, at date: Date, calendar: Calendar
+    ) -> String {
+        let next = Array(digest.upcoming.prefix(3))
+        guard !next.isEmpty else { return "Nothing else is planned. You can rest easy." }
+        let phrases = next.map {
+            "\(lowercasedFirst($0.title)) \(dayPhrase(for: $0.when, at: date, calendar: calendar))"
+        }
+        return "Coming up, you have " + list(phrases) + "."
+    }
+
+    private static func whoIsHere(facts: GroundingFacts, people: [Person]) -> String {
+        let visiting = people.filter(\.isVisitingToday)
+        var pieces = ["\(facts.currentCaregiverName) is \(lowercasedFirst(facts.currentCaregiverRelationship))."]
+        if !visiting.isEmpty {
+            let names = visiting.map { "\($0.name), \(lowercasedFirst($0.relationship))" }
+            pieces.append("\(sentenceCased(list(names))) \(visiting.count == 1 ? "is" : "are") visiting today.")
+        }
+        pieces.append("If you need anyone else, \(facts.primaryContactName) is just a phone call away.")
+        return pieces.joined(separator: " ")
+    }
+
+    /// "at 3:00 pm" today, "on Friday at 2:00 pm" beyond it.
+    static func dayPhrase(for target: Date, at date: Date = .now, calendar: Calendar = .current) -> String {
+        let time = "at \(timeOfDay(target, calendar: calendar))"
+        guard !calendar.isDate(target, inSameDayAs: date) else { return time }
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.dateFormat = "EEEE"
+        return "on \(formatter.string(from: target)) \(time)"
+    }
+
+    // MARK: Conversation recaps
+    //
+    // The recap is assembled here, deterministically, from the rolling digest.
+    // The model helped notice what the subjects were; it does not get to write
+    // the sentence that goes into the log and is later read back as memory.
+
+    /// What a finished conversation gets remembered as.
+    static func recap(
+        _ digest: ConversationDigest,
+        participants: [Person],
+        settings: SummarizationSettings = .default,
+        at date: Date = .now,
+        calendar: Calendar = .current
+    ) -> String {
+        guard digest.hasSubstance(minimumBeats: settings.minimumBeats) else {
+            return plainRecap(participants: participants, at: date, calendar: calendar)
+        }
+        let topics = digest.topTopics()
+        return "You had a chat with \(who(participants)) about \(list(topics.map { lowercasedFirst($0) }))."
+    }
+
+    /// The floor: true by construction, because it uses only who and when.
+    /// Written whenever there was no model, too little said, or nothing caught.
+    static func plainRecap(
+        participants: [Person],
+        at date: Date = .now,
+        calendar: Calendar = .current
+    ) -> String {
+        let part = partOfDay(at: date, calendar: calendar)
+        let when = part == "nighttime" ? "a little while ago" : "this \(part)"
+        return "You had a chat with \(who(participants)) \(when)."
+    }
+
+    private static func who(_ participants: [Person]) -> String {
+        participants.isEmpty ? "me" : list(participants.map(\.name))
+    }
+
     // MARK: Shared formatting
 
     static func timeOfDay(_ date: Date, calendar: Calendar = .current) -> String {
@@ -200,6 +378,12 @@ enum GroundingService {
     private static func sentenceCased(_ text: String) -> String {
         guard let first = text.first else { return text }
         return first.uppercased() + text.dropFirst()
+    }
+
+    /// For dropping a stored phrase mid-sentence: "Your son" → "your son".
+    private static func lowercasedFirst(_ text: String) -> String {
+        guard let first = text.first else { return text }
+        return first.lowercased() + text.dropFirst()
     }
 
     private static func relativePast(from earlier: Date, to now: Date) -> String {
