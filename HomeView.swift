@@ -1,25 +1,26 @@
 import SwiftUI
 import SwiftData
 
+/// "Where you are now" — the grounding answer, then today.
+///
+/// The screen shows only today: what is true right now, and the day's timeline
+/// of events and conversations. Later-today events sit in that same list; they
+/// are ordinary events whose time has not arrived. The app keeps a wider window
+/// than this in the store (see `GroundingDigest`) so the assistant can still
+/// answer about last week or next Tuesday — it just isn't on screen.
 struct HomeView: View {
     @Environment(SpeechManager.self) private var speech
 
     @Query private var facts: [GroundingFacts]
-    @Query(sort: \LogEntry.timestamp, order: .forward) private var log: [LogEntry]
-    @Query(sort: \AgendaEvent.time, order: .forward) private var agenda: [AgendaEvent]
-
-    @State private var orientation: Orientation = .now
+    @Query(sort: \Event.when, order: .forward) private var events: [Event]
+    @Query(sort: \Conversation.startedAt, order: .forward) private var conversations: [Conversation]
 
     private var groundingFacts: GroundingFacts? { facts.first }
 
     var body: some View {
         VStack(spacing: 24) {
-            OrientationPicker(selection: $orientation)
-
-            switch orientation {
-            case .now: nowView
-            case .next: nextView
-            }
+            nowSection
+            todaySection
         }
         .padding(.horizontal, 20)
         .onAppear(perform: speakGrounding)
@@ -27,7 +28,7 @@ struct HomeView: View {
 
     // MARK: - Right now
 
-    private var nowView: some View {
+    private var nowSection: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             let now = context.date
             VStack(spacing: 16) {
@@ -52,8 +53,8 @@ struct HomeView: View {
                                 .font(Theme.font(16, .medium))
                                 .foregroundStyle(Theme.foreground)
                             Text(GroundingService.presentSummary(
-                                recentDone: mostRecentDone(before: now),
-                                nextUp: nextEvent(after: now),
+                                recent: GroundingService.past(events, before: now, limit: 1).first,
+                                upcoming: GroundingService.upcoming(events, after: now, limit: 1).first,
                                 at: now
                             ))
                             .font(Theme.font(14))
@@ -82,125 +83,121 @@ struct HomeView: View {
         }
     }
 
-    // MARK: - Done today
+    // MARK: - Today
 
-    private var pastView: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            IntroLine(text: GroundingService.doneIntro)
-            ForEach(todaysLog) { entry in
-                HStack(spacing: 14) {
-                    IconChip(systemName: "checkmark", diameter: 28,
-                             background: Theme.sageSoft, tint: Theme.sage)
-                    Text(entry.label)
-                        .font(Theme.font(14, .medium))
-                        .foregroundStyle(Theme.foreground)
-                    Spacer()
-                    Text(GroundingService.timeOfDay(entry.timestamp))
-                        .font(Theme.font(12))
-                        .foregroundStyle(Theme.mutedText)
+    private var todaySection: some View {
+        TimelineView(.periodic(from: .now, by: 60)) { context in
+            let now = context.date
+            let entries = GroundingService.timeline(
+                events: events,
+                conversations: conversations,
+                on: now
+            )
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text(GroundingService.todayIntro)
+                    .font(Theme.font(14, .medium))
+                    .foregroundStyle(Theme.mutedText)
+                    .padding(.horizontal, 4)
+                    .padding(.bottom, 2)
+
+                ForEach(entries) { entry in
+                    TimelineRow(entry: entry, hasHappened: entry.hasHappened(by: now))
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-                .frame(maxWidth: .infinity)
-                .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
-                .shadow(color: .black.opacity(0.06), radius: 4, y: 1)
             }
         }
     }
 
-    // MARK: - What's next
-
-    private var nextView: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            IntroLine(text: GroundingService.nextIntro)
-            ForEach(agenda) { event in
-                HStack(spacing: 14) {
-                    Text(GroundingService.timeOfDay(event.time))
-                        .font(Theme.font(12, .semibold))
-                        .foregroundStyle(Theme.sage)
-                        .frame(width: 64, alignment: .leading)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(event.title)
-                            .font(Theme.font(14, .medium))
-                            .foregroundStyle(Theme.foreground)
-                        if !event.detail.isEmpty {
-                            Text(event.detail)
-                                .font(Theme.font(12))
-                                .foregroundStyle(Theme.mutedText)
-                        }
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-                .frame(maxWidth: .infinity)
-                .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
-                .shadow(color: .black.opacity(0.06), radius: 4, y: 1)
-            }
-        }
-    }
-
-    // MARK: - Derived data
-
-    private var todaysLog: [LogEntry] {
-        let startOfDay = Calendar.current.startOfDay(for: .now)
-        return log.filter { $0.timestamp >= startOfDay }
-    }
-
-    private func mostRecentDone(before now: Date) -> LogEntry? {
-        todaysLog.last { $0.timestamp <= now }
-    }
-
-    private func nextEvent(after now: Date) -> AgendaEvent? {
-        agenda.first { $0.time > now }
-    }
+    // MARK: - Speech
 
     private func speakGrounding() {
         guard let facts = groundingFacts else { return }
-        speech.speak(GroundingService.spokenGrounding(facts: facts, at: .now))
+        speech.speak(GroundingService.spokenGrounding(
+            facts: facts,
+            recent: GroundingService.past(events, before: .now, limit: 1).first,
+            at: .now
+        ))
     }
 }
 
 // MARK: - Supporting views
 
-/// The segmented "Done today / Right now / What's next" control.
-private struct OrientationPicker: View {
-    @Binding var selection: Orientation
+/// One line of the day. Past entries read as settled and lead with a check;
+/// entries still to come lead with their time, without implying anything is owed.
+private struct TimelineRow: View {
+    let entry: TimelineEntry
+    let hasHappened: Bool
 
     var body: some View {
-        HStack(spacing: 4) {
-            ForEach(Orientation.allCases) { option in
-                let isSelected = option == selection
-                Button {
-                    withAnimation(.easeOut(duration: 0.2)) { selection = option }
-                } label: {
-                    Text(option.label)
-                        .font(Theme.font(14, .medium))
-                        .foregroundStyle(isSelected ? Theme.foreground : Theme.mutedText)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 10)
-                        .background {
-                            if isSelected {
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .fill(Theme.card)
-                                    .shadow(color: .black.opacity(0.08), radius: 3, y: 1)
-                            }
-                        }
+        HStack(alignment: .top, spacing: 14) {
+            if hasHappened {
+                IconChip(systemName: icon, diameter: 28,
+                         background: Theme.sageSoft, tint: Theme.sage)
+            } else {
+                Text(GroundingService.timeOfDay(entry.when))
+                    .font(Theme.font(12, .semibold))
+                    .foregroundStyle(Theme.sage)
+                    .frame(width: 64, alignment: .leading)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(Theme.font(14, .medium))
+                    .foregroundStyle(Theme.foreground)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(Theme.font(12))
+                        .foregroundStyle(Theme.mutedText)
                 }
             }
+
+            Spacer(minLength: 8)
+
+            if hasHappened {
+                Text(GroundingService.timeOfDay(entry.when))
+                    .font(Theme.font(12))
+                    .foregroundStyle(Theme.mutedText)
+            }
         }
-        .padding(4)
-        .background(Theme.muted, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity)
+        .background(Theme.card, in: RoundedRectangle(cornerRadius: Theme.cardRadius, style: .continuous))
+        .shadow(color: .black.opacity(0.06), radius: 4, y: 1)
+    }
+
+    private var title: String {
+        switch entry {
+        case .event(let event): event.title
+        case .conversation(let conversation): GroundingService.conversationLine(conversation)
+        }
+    }
+
+    private var detail: String? {
+        switch entry {
+        case .event(let event): event.detail
+        case .conversation: "Still talking"
+        }
+    }
+
+    private var icon: String {
+        switch entry {
+        case .event(let event):
+            switch event.source {
+            case .caregiverNote: "note.text"
+            case .conversation: "bubble.left.and.bubble.right.fill"
+            case .confirmation: "checkmark"
+            }
+        case .conversation:
+            "waveform"
+        }
     }
 }
 
-private struct IntroLine: View {
-    let text: String
-    var body: some View {
-        Text(text)
-            .font(Theme.font(14, .medium))
-            .foregroundStyle(Theme.mutedText)
-            .padding(.horizontal, 4)
-            .padding(.bottom, 2)
-    }
+#Preview {
+    ScrollView { HomeView() }
+        .background(Theme.background)
+        .environment(SpeechManager())
+        .modelContainer(previewContainer)
 }

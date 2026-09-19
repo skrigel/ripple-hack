@@ -10,9 +10,9 @@ struct AssistantSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @Query private var facts: [GroundingFacts]
-    @Query(sort: \LogEntry.timestamp) private var log: [LogEntry]
-    @Query(sort: \AgendaEvent.time) private var agenda: [AgendaEvent]
+    @Query(sort: \Event.when) private var events: [Event]
     @Query(sort: \Person.sortOrder) private var people: [Person]
+    @Query(sort: \ComfortTopic.sortOrder) private var comfortTopics: [ComfortTopic]
 
     @State private var selected: AssistantPrompt?
     @State private var displayed = ""
@@ -143,41 +143,58 @@ struct AssistantSheet: View {
     private func response(for prompt: AssistantPrompt) -> String {
         switch prompt {
         case .time: timeResponse
-        case .done: doneResponse
+        case .happened: happenedResponse
         case .upcoming: upcomingResponse
         case .who: whoResponse
         case .safe: safeResponse
+        case .chat: chatResponse
         }
     }
 
     private var userName: String { facts.first?.userName ?? "there" }
 
+    /// The wider window the assistant may draw on — more than Home shows.
+    private var digest: GroundingDigest? {
+        facts.first.map {
+            GroundingDigest(facts: $0, events: events, comfortTopics: comfortTopics)
+        }
+    }
+
     private var timeResponse: String {
         let base = "It's \(GroundingService.timeOfDay(.now)), \(userName)."
-        guard let next = agenda.first(where: { $0.time > .now }) else { return base }
-        return base + " \(next.title) is coming up at \(GroundingService.timeOfDay(next.time))."
+        guard let next = digest?.upcoming.first else { return base }
+        return base + " \(next.title) is coming up at \(GroundingService.timeOfDay(next.when))."
     }
 
-    private var doneResponse: String {
-        let startOfDay = Calendar.current.startOfDay(for: .now)
-        let items = log.filter { $0.timestamp >= startOfDay }
+    private var happenedResponse: String {
+        let items = (digest?.today ?? []).filter { $0.hasHappened() }
         guard !items.isEmpty else { return "You're just getting started today, \(userName)." }
-        let phrases = items.map { "\($0.label.lowercased()) at \(GroundingService.timeOfDay($0.timestamp))" }
-        return "You've had a lovely day so far. You " + list(phrases) + "."
+        let phrases = items.map { "\($0.title.lowercased()) at \(GroundingService.timeOfDay($0.when))" }
+        return "You've had a lovely day so far. " + GroundingService.list(phrases).capitalizedFirst + "."
     }
 
+    /// Reaches past today — the next thing coming up may be days away.
     private var upcomingResponse: String {
-        let items = agenda.filter { $0.time > .now }
-        guard !items.isEmpty else { return "Nothing else is planned for today. You can rest easy." }
-        let phrases = items.map { "\($0.title.lowercased()) at \(GroundingService.timeOfDay($0.time))" }
-        return "Coming up, you have " + list(phrases) + "."
+        let items = digest?.upcoming.prefix(3).map { $0 } ?? []
+        guard !items.isEmpty else { return "Nothing else is planned. You can rest easy." }
+        let phrases = items.map { "\($0.title.lowercased()) \(dayPhrase(for: $0.when))" }
+        return "Coming up, you have " + GroundingService.list(phrases) + "."
+    }
+
+    /// "at 3:00 pm" for today, "on Friday at 2:00 pm" beyond it.
+    private func dayPhrase(for date: Date, calendar: Calendar = .current) -> String {
+        let time = "at \(GroundingService.timeOfDay(date, calendar: calendar))"
+        guard !calendar.isDate(date, inSameDayAs: .now) else { return time }
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.dateFormat = "EEEE"
+        return "on \(formatter.string(from: date)) \(time)"
     }
 
     private var whoResponse: String {
-        let onDuty = people.first { $0.relationship.localizedCaseInsensitiveContains("nurse") }
         let visiting = people.first { $0.isVisitingToday }
         let pieces = [
-            onDuty.map { "\($0.name) is your nurse on duty today." },
+            facts.first.map { "\($0.currentCaregiverName) is \($0.currentCaregiverRelationship.lowercasedFirst)." },
             visiting.map { "\($0.name) is coming to visit." },
             facts.first.map { "If you need anyone else, \($0.primaryContactName) is just a phone call away." },
         ].compactMap { $0 }
@@ -189,28 +206,45 @@ struct AssistantSheet: View {
         return "You are safe, \(facts.userName). You're at \(facts.homeLabel), \(facts.roomLabel). Everything is okay."
     }
 
-    /// Join phrases with commas and a trailing "and", e.g. "a, b and c".
-    private func list(_ phrases: [String]) -> String {
-        guard let last = phrases.last else { return "" }
-        guard phrases.count > 1 else { return last }
-        return phrases.dropLast().joined(separator: ", ") + " and " + last
+    /// Opens a conversation from a caregiver-noted comfort topic. This is the
+    /// one place the app *steers* rather than reports — and it still only ever
+    /// draws on what a caregiver entered.
+    private var chatResponse: String {
+        guard let topic = comfortTopics.first else {
+            return "I'd love to hear about your day, \(userName). What's on your mind?"
+        }
+        let opener = "Tell me about \(topic.title.lowercasedFirst), \(userName)."
+        return topic.detail.isEmpty ? opener : opener + " I'd love to hear about it."
     }
 }
 
 /// The fixed set of things the person can ask.
 enum AssistantPrompt: String, CaseIterable, Identifiable {
-    case time, done, upcoming, who, safe
+    case time, happened, upcoming, who, safe, chat
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .time: "What time is it?"
-        case .done: "What have I done today?"
+        case .happened: "What's happened today?"
         case .upcoming: "What's coming up?"
         case .who: "Who's here today?"
         case .safe: "Am I safe?"
+        case .chat: "Let's talk about something nice"
         }
+    }
+}
+
+private extension String {
+    var capitalizedFirst: String {
+        guard let first else { return self }
+        return first.uppercased() + dropFirst()
+    }
+
+    var lowercasedFirst: String {
+        guard let first else { return self }
+        return first.lowercased() + dropFirst()
     }
 }
 

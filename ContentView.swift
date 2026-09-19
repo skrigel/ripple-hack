@@ -3,14 +3,14 @@ import SwiftData
 
 /// The three primary destinations in the bottom navigation.
 enum AppTab: String, CaseIterable, Identifiable {
-    case home, tasks, people
+    case home, past, people
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .home: "Today"
-        case .tasks: "Tasks"
+        case .past: "Past"
         case .people: "People"
         }
     }
@@ -18,7 +18,7 @@ enum AppTab: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .home: "clock"
-        case .tasks: "checklist"
+        case .past: "bubble.left.and.text.bubble.right"
         case .people: "person.2"
         }
     }
@@ -28,7 +28,6 @@ struct ContentView: View {
     @Query private var facts: [GroundingFacts]
 
     @State private var tab: AppTab = .home
-    @State private var showingNightMode = false
     @State private var showingAssistant = false
 
     private var userName: String { facts.first?.userName ?? "there" }
@@ -49,9 +48,6 @@ struct ContentView: View {
 
             navigationBar
             assistantButton.padding(.bottom, 92)
-        }
-        .fullScreenCover(isPresented: $showingNightMode) {
-            NightModeView { showingNightMode = false }
         }
         .sheet(isPresented: $showingAssistant) {
             AssistantSheet()
@@ -74,17 +70,6 @@ struct ContentView: View {
                     .foregroundStyle(Theme.foreground)
             }
             Spacer()
-            Button { showingNightMode = true } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "moon.fill").font(.system(size: 10))
-                    Text("Night").font(Theme.font(12, .medium))
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(Theme.foreground, in: Capsule())
-                .foregroundStyle(Theme.background)
-            }
-            .accessibilityLabel("Switch to night mode")
         }
         .padding(.horizontal, 20)
         .padding(.top, 4)
@@ -97,7 +82,7 @@ struct ContentView: View {
     private var selectedScreen: some View {
         switch tab {
         case .home: HomeView()
-        case .tasks: TaskListView()
+        case .past: RecentView()
         case .people: PeopleView()
         }
     }
