@@ -159,14 +159,11 @@ struct AssistantSheet: View {
     }
 
     /// The slice of the store a conversation reads from and writes back to.
+    /// It reads through the context rather than capturing this view's query
+    /// results, so a session that opens before the queries load still sees
+    /// everyone.
     private var conversationStore: ConversationStore {
-        ConversationStore(
-            context: modelContext,
-            facts: facts.first,
-            events: events,
-            people: people,
-            comfortTopics: comfortTopics
-        )
+        ConversationStore(context: modelContext)
     }
 
     // MARK: - Quick-action chips

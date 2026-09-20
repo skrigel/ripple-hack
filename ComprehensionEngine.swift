@@ -200,6 +200,7 @@ final class ComprehensionEngine {
         case .whatsComingUp: return .whatsComingUp
         case .whoIsHere: return .whoIsHere
         case .amISafe: return .amISafe
+        case .sharingAFeeling: return .feeling
         case .justTalking: return .comfortChat(nil)
         case .unclear: return .unclear
         case .aboutSomeone:
@@ -213,12 +214,21 @@ final class ComprehensionEngine {
     }
 
     private static let routingInstructions = """
-    You sort questions from an older person into fixed categories. You never \
-    answer the question and never write a sentence for them to read. Choose the \
-    single closest category. If the question does not clearly fit one, choose \
-    unclear — that is a good answer, not a failure. When the question is about \
-    a particular person, copy their name exactly from the list you are given, \
-    and leave the name empty if it is not on that list.
+    You sort what an older person said into fixed categories. You never answer \
+    them and never write a sentence for them to read.
+
+    First decide whether they are asking for information at all. If they are \
+    telling you how they feel — sad, lonely, tired, missing someone, or that \
+    the day is hard — choose sharingAFeeling. Do this even when they mention a \
+    person or a time, because they are not asking about that person or that \
+    time. Never route a feeling to a category that would answer it with a fact; \
+    being told who is visiting when you have said you are sad is worse than \
+    being told nothing.
+
+    Otherwise choose the single closest category. If it does not clearly fit \
+    one, choose unclear — that is a good answer, not a failure. When they ask \
+    about a particular person, copy that person's name exactly from the list \
+    you are given, and leave the name empty if it is not on that list.
     """
 
     private static let extractionInstructions = """
@@ -256,6 +266,10 @@ enum GenerableIntent {
     case whoIsHere
     case aboutSomeone
     case amISafe
+    /// Saying how they feel rather than asking anything. Without this case
+    /// every option is a question, so the classifier has to force a feeling
+    /// into one and the person gets a fact they did not ask for.
+    case sharingAFeeling
     case justTalking
     case unclear
 }

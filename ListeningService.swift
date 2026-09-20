@@ -235,7 +235,22 @@ final class ListeningService {
 
         print("▶️ Listening resumed")
 
+        resumedAt = .now
         state = .listening
+    }
+
+    /// When the microphone last reopened.
+    ///
+    /// Transcription lags the audio it describes, so a result delivered just
+    /// after this covers sound from while the companion was still speaking.
+    /// Without echo cancellation that sound is usually our own voice, and
+    /// acting on it means answering ourselves.
+    private var resumedAt: Date?
+    private let echoTail: TimeInterval = 1.0
+
+    private var isWithinEchoTail: Bool {
+        guard let resumedAt else { return false }
+        return Date.now.timeIntervalSince(resumedAt) < echoTail
     }
 
     // MARK: - Stop
@@ -321,6 +336,12 @@ final class ListeningService {
 
                     guard self.state == .listening,
                           !text.isEmpty else {
+                        continue
+                    }
+
+                    // Audio captured while we were talking, arriving late.
+                    if self.isWithinEchoTail {
+                        print("🔇 DISCARDED (echo tail):", text)
                         continue
                     }
 

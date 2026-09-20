@@ -196,6 +196,7 @@ final class CompanionSession {
 
     private func receive(_ turn: String, store: ConversationStore) {
         guard phase == .listening || phase == .opening else { return }
+        guard isSomeoneSpeaking(turn) else { return }
         self.store = store
 
         turnsHeard += 1
@@ -214,18 +215,56 @@ final class CompanionSession {
         let intent = await comprehension.interpret(turn, people: store.people)
         guard phase == .thinking else { return }
 
+        let digest = store.groundingDigest()
         let grounded = GroundingService.answer(
             for: intent,
-            digest: store.groundingDigest(),
+            digest: digest,
             people: store.people,
             lastSpoken: speech.lastSpoken
         )
 
-        // Frightened or verbatim moments never touch the phrasing model.
-        let line = intent.isVerbatim ? grounded : await phrasing.warmlyRephrase(grounded)
+        let line: String
+        if intent.isVerbatim {
+            // Frightened or verbatim moments never touch the phrasing model.
+            line = grounded
+        } else if intent.wantsCompanionship {
+            // Nothing in the store answers this, so acknowledge the person
+            // rather than deflecting. Every name we know is passed in to be
+            // rejected: questions about people have a grounded path, so a name
+            // here would be an unearned claim about who is around.
+            line = await phrasing.converse(
+                about: turn,
+                neverMention: store.people.map(\.name) + [
+                    digest.facts.currentCaregiverName,
+                    digest.facts.primaryContactName,
+                ],
+                fallback: grounded
+            )
+        } else {
+            line = await phrasing.warmlyRephrase(grounded)
+        }
         guard phase == .thinking else { return }
 
         say(line, priority: intent == .distress ? .grounding : .reply)
+    }
+
+    /// Whether this transcript is actually a person talking to us.
+    ///
+    /// Two things arrive that are not. A near-empty result is room noise the
+    /// transcriber tried to make words of. And because the loop runs without
+    /// echo cancellation, audio captured while the companion was talking can
+    /// be delivered just after the microphone reopens — the app hearing
+    /// itself, then answering itself, with nobody having said anything.
+    private func isSomeoneSpeaking(_ turn: String) -> Bool {
+        let heard = QueryInterpreter.normalize(turn)
+        guard heard.count >= 2, heard.contains(where: \.isLetter) else { return false }
+
+        // Only compare longer utterances; a genuine "yes" can legitimately
+        // appear inside a line we just spoke.
+        guard heard.count >= 8 else { return true }
+        let spoken = QueryInterpreter.normalize(speech.lastSpoken)
+        guard !spoken.isEmpty else { return true }
+        return !spoken.contains(heard) && !heard.contains(spoken)
     }
 
     private func say(_ line: String, priority: SpeechManager.Priority) {
@@ -307,17 +346,37 @@ final class CompanionSession {
     }
 }
 
-/// The slice of the store a conversation needs, gathered once by the view.
+/// The slice of the store a conversation needs, read live.
 ///
-/// `CompanionSession` stays out of SwiftData's way: the view owns the queries
-/// and hands over plain arrays plus the context to write back through.
+/// These are deliberately computed rather than arrays handed over once. A
+/// session captures this value when it opens and keeps it for the whole
+/// conversation, so a snapshot taken before `@Query` had loaded would stay
+/// empty for the entire session — and an empty `people` means "who is David"
+/// matches nobody and degrades to a shrug. Reading through the context each
+/// time costs a cheap fetch and cannot go stale.
 @MainActor
 struct ConversationStore {
     let context: ModelContext
-    let facts: GroundingFacts?
-    let events: [Event]
-    let people: [Person]
-    let comfortTopics: [ComfortTopic]
+
+    var facts: GroundingFacts? {
+        fetch(FetchDescriptor<GroundingFacts>()).first
+    }
+
+    var events: [Event] {
+        fetch(FetchDescriptor<Event>(sortBy: [SortDescriptor(\.when)]))
+    }
+
+    var people: [Person] {
+        fetch(FetchDescriptor<Person>(sortBy: [SortDescriptor(\.sortOrder)]))
+    }
+
+    var comfortTopics: [ComfortTopic] {
+        fetch(FetchDescriptor<ComfortTopic>(sortBy: [SortDescriptor(\.sortOrder)]))
+    }
+
+    private func fetch<T: PersistentModel>(_ descriptor: FetchDescriptor<T>) -> [T] {
+        (try? context.fetch(descriptor)) ?? []
+    }
 
     /// The wider window the companion may draw on — more than Home shows.
     func groundingDigest(at date: Date = .now) -> GroundingDigest {

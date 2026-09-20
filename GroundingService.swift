@@ -195,9 +195,21 @@ enum GroundingService {
         case .distress:
             return reassurance(facts: facts)
 
+        case .feeling:
+            return companionship(facts: facts)
+
         case .unclear:
             return unsure(digest, facts: facts)
         }
+    }
+
+    /// The fallback when someone has told us how they feel and the kind reply
+    /// could not be composed. Sits with them and states nothing — no visitor,
+    /// no time, no plan. Someone who has just said they are sad is not asking
+    /// for their schedule.
+    static func companionship(facts: GroundingFacts) -> String {
+        "I'm sorry, \(facts.userName). I'm here with you. "
+            + "Would you like to tell me about it, or shall I keep you company a while?"
     }
 
     /// How a conversation opens. Short on purpose: the person pressed the
@@ -222,12 +234,18 @@ enum GroundingService {
         return line
     }
 
-    /// When we did not catch the question. True, calm, and hands back a thread
-    /// worth pulling rather than admitting failure.
+    /// When we did not catch the question. True, calm, and offers a way on
+    /// without pretending to have understood.
+    ///
+    /// It deliberately does not name a comfort topic. This line is reached
+    /// every time nothing matches, and `comfortTopics.first` is the same topic
+    /// every time — so suggesting it here meant every unrecognised question,
+    /// on any subject, came back as "shall we talk about the garden?".
+    /// `PhrasingEngine.converse` offers the way on now, in words that fit what
+    /// was actually said.
     static func unsure(_ digest: GroundingDigest, facts: GroundingFacts) -> String {
-        let base = "I'm not quite sure about that one, \(facts.userName) — but you're safe here at \(facts.homeLabel)."
-        guard let topic = digest.comfortTopics.first else { return base }
-        return base + " Shall we talk about \(lowercasedFirst(topic.title))?"
+        "I'm not quite sure about that one, \(facts.userName) — but you're safe here at \(facts.homeLabel). "
+            + "Is there something you'd like me to tell you?"
     }
 
     private static func happenedToday(

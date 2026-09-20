@@ -18,6 +18,12 @@ enum QueryIntent: Equatable {
     case repeatThat
     /// Fear or disorientation. Always answered verbatim, never by the model.
     case distress
+    /// Telling us how they feel — sad, lonely, tired — rather than asking
+    /// anything. There is no fact that answers this, and reaching for one is
+    /// the wrong move: "I feel sad today" was once met with "Maya is here at
+    /// three o'clock", because every other intent is a question and the
+    /// classifier picked the nearest.
+    case feeling
     /// Nothing matched. Answered with a gentle, true redirect.
     case unclear
 
@@ -25,6 +31,15 @@ enum QueryIntent: Equatable {
     var isVerbatim: Bool {
         switch self {
         case .distress, .amISafe, .repeatThat: true
+        default: false
+        }
+    }
+
+    /// Intents with no factual answer, which are met with kindness composed
+    /// without any knowledge of the person. See `PhrasingEngine.converse`.
+    var wantsCompanionship: Bool {
+        switch self {
+        case .feeling, .unclear: true
         default: false
         }
     }
@@ -45,6 +60,11 @@ enum QueryInterpreter {
 
         // Distress is tested first: it outranks whatever else was said.
         if contains(text, Phrases.distress) { return .distress }
+
+        // Then feelings, before any of the question patterns. Someone saying
+        // how they are is not asking for information, and answering them with
+        // information is worse than saying nothing.
+        if contains(text, Phrases.feeling) { return .feeling }
 
         if contains(text, Phrases.repeatThat) { return .repeatThat }
         if contains(text, Phrases.whereAmI) { return .whereAmI }
@@ -117,7 +137,18 @@ enum QueryInterpreter {
         static let distress = [
             "im scared", "i am scared", "frightened", "help me",
             "somethings wrong", "i want to go home", "i dont know where",
-            "im lost", "i am lost", "im frightened",
+            "im lost", "i am lost", "im frightened", "dont feel safe",
+        ]
+        /// Saying how they are, not asking anything. Kept broad on purpose:
+        /// mistaking a question for a feeling costs a kind sentence, while
+        /// mistaking a feeling for a question costs a non sequitur about
+        /// somebody's visiting time.
+        static let feeling = [
+            "i feel", "im feeling", "i am feeling", "im sad", "i am sad",
+            "im lonely", "i am lonely", "lonely", "im tired", "i am tired",
+            "im worried", "i am worried", "im upset", "i am upset",
+            "i miss", "im bored", "i am bored", "im unhappy", "i dont feel",
+            "this is hard", "i cant do this", "im not myself",
         ]
         static let repeatThat = [
             "say that again", "repeat that", "what did you say", "again please",
