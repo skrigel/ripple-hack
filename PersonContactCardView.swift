@@ -20,6 +20,7 @@ struct PersonContactCardView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
+    @Environment(RippleServices.self) private var services
     @Query private var allPeople: [Person]
 
     @State private var name: String
@@ -27,7 +28,12 @@ struct PersonContactCardView: View {
     @State private var phone: String
     @State private var recentContext: String
     @State private var memories: [String]
+    @State private var voiceClipData: Data?
     @State private var newMemory = ""
+
+    /// Identifies this sheet's clip while it is being previewed, before there
+    /// is a saved `Person.id` to key playback on.
+    @State private var draftID = UUID()
 
     init(mode: Mode, onCreate: ((Person) -> Void)? = nil) {
         self.mode = mode
@@ -39,12 +45,14 @@ struct PersonContactCardView: View {
             _phone = State(initialValue: "")
             _recentContext = State(initialValue: "")
             _memories = State(initialValue: [])
+            _voiceClipData = State(initialValue: nil)
         case .edit(let person):
             _name = State(initialValue: person.name)
             _relationship = State(initialValue: person.relationship)
             _phone = State(initialValue: person.phone)
             _recentContext = State(initialValue: person.recentContext)
             _memories = State(initialValue: person.memories)
+            _voiceClipData = State(initialValue: person.voiceClipData)
         }
     }
 
@@ -59,6 +67,7 @@ struct PersonContactCardView: View {
                 VStack(spacing: 24) {
                     avatar
                     fields
+                    voiceSection
                     memoriesSection
                 }
                 .padding(.horizontal, 20)
@@ -67,6 +76,14 @@ struct PersonContactCardView: View {
             .scrollIndicators(.hidden)
         }
         .background(Theme.background)
+        .onChange(of: services.voiceClips.recordedClip) { _, clip in
+            guard clip != nil else { return }
+            voiceClipData = services.voiceClips.takeRecordedClip()
+        }
+        .onDisappear {
+            services.voiceClips.stopRecording()
+            services.voiceClips.stopPlayback()
+        }
     }
 
     // MARK: - Header
@@ -137,6 +154,112 @@ struct PersonContactCardView: View {
         }
     }
 
+    // MARK: - Voice clip
+
+    /// A few seconds of the real voice, recorded by whoever is holding the
+    /// phone. Played back untouched — the point is that it is *not* the
+    /// synthesizer, so nothing here rewrites, trims, or interprets it.
+    private var voiceSection: some View {
+        RippleCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Voice clip")
+                    .font(Theme.font(13, .semibold))
+                    .foregroundStyle(Theme.secondaryText)
+
+                Text("A few seconds of \(possessiveName) own voice — a hello to play back alongside the name.")
+                    .font(Theme.font(12))
+                    .foregroundStyle(Theme.mutedText)
+
+                if services.voiceClips.isRecording {
+                    recordingControls
+                } else if let voiceClipData {
+                    clipControls(voiceClipData)
+                } else {
+                    recordButton
+                }
+            }
+        }
+    }
+
+    private var possessiveName: String {
+        trimmedName.isEmpty ? "their" : "\(trimmedName)'s"
+    }
+
+    private var isPreviewing: Bool { services.voiceClips.playingID == draftID }
+
+    private var recordButton: some View {
+        Button { beginRecording() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "mic.fill").font(.system(size: 13, weight: .semibold))
+                Text("Record a clip")
+            }
+        }
+        .buttonStyle(SoftButtonStyle())
+    }
+
+    private var recordingControls: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Theme.coral)
+                    .frame(width: 10, height: 10)
+                if let startedAt = services.voiceClips.recordingStartedAt {
+                    // The counter ticks in the view rather than the service, so
+                    // nothing has to own a timer just to redraw a label.
+                    TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                        Text(elapsed(from: startedAt, to: context.date))
+                            .font(Theme.font(15, .medium).monospacedDigit())
+                            .foregroundStyle(Theme.foreground)
+                    }
+                }
+                Spacer()
+                Text("Stops at \(Int(VoiceClipService.maximumDuration))s")
+                    .font(Theme.font(11))
+                    .foregroundStyle(Theme.mutedText)
+            }
+
+            Button("Stop recording") { services.voiceClips.stopRecording() }
+                .buttonStyle(ProminentButtonStyle(fill: Theme.coral))
+        }
+    }
+
+    private func clipControls(_ data: Data) -> some View {
+        VStack(spacing: 10) {
+            Button {
+                services.voiceClips.play(data, id: draftID)
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: isPreviewing ? "stop.fill" : "play.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(isPreviewing ? "Stop" : "Play clip")
+                }
+            }
+            .buttonStyle(SoftButtonStyle(fill: Theme.sageSoft, foreground: Theme.sage))
+
+            HStack {
+                Button("Record again") { beginRecording() }
+                    .font(Theme.font(13, .medium))
+                    .foregroundStyle(Theme.sage)
+                Spacer()
+                Button("Remove clip") {
+                    services.voiceClips.stopPlayback()
+                    voiceClipData = nil
+                }
+                .font(Theme.font(13, .medium))
+                .foregroundStyle(Theme.coral)
+            }
+        }
+    }
+
+    private func beginRecording() {
+        Task { await services.voiceClips.startRecording() }
+    }
+
+    private func elapsed(from start: Date, to now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(start)))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+
     // MARK: - Memories
 
     private var memoriesSection: some View {
@@ -191,6 +314,7 @@ struct PersonContactCardView: View {
                 recentContext: recentContext,
                 phone: phone,
                 memories: memories,
+                voiceClipData: voiceClipData,
                 avatarBackgroundHex: palette.background,
                 avatarTintHex: palette.tint,
                 isCaregiver: presetCaregiver,
@@ -204,6 +328,7 @@ struct PersonContactCardView: View {
             person.phone = phone
             person.recentContext = recentContext
             person.memories = memories
+            person.voiceClipData = voiceClipData
             person.lastModified = .now
         }
         dismiss()
@@ -237,4 +362,5 @@ extension PersonContactCardView.Mode: Identifiable {
 #Preview {
     PersonContactCardView(mode: .create(presetCaregiver: false))
         .modelContainer(previewContainer)
+        .environment(RippleServices())
 }

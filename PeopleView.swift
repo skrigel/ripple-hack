@@ -4,6 +4,7 @@ import SwiftData
 struct PeopleView: View {
     @Environment(\.openURL) private var openURL
     @Environment(\.currentCaregiver) private var currentCaregiver
+    @Environment(RippleServices.self) private var services
     @Query(sort: \Person.sortOrder) private var people: [Person]
 
     @State private var personCardMode: PersonContactCardView.Mode?
@@ -32,15 +33,27 @@ struct PeopleView: View {
             ForEach(people) { person in
                 PersonCard(
                     person: person,
+                    isPlayingClip: services.voiceClips.playingID == person.id,
                     onCall: { call(person) },
+                    onPlayClip: playClipAction(for: person),
                     onEdit: currentCaregiver != nil ? { personCardMode = .edit(person) } : nil
                 )
             }
         }
         .padding(.horizontal, 20)
         .sheet(item: $personCardMode) { mode in
+            // Built outside this view's tree, so the services are handed over
+            // explicitly — see the same re-injection in `ContentView`.
             PersonContactCardView(mode: mode)
+                .environment(services)
         }
+    }
+
+    /// `nil` for anyone without a recording, so the card simply has no clip
+    /// button rather than an inert one.
+    private func playClipAction(for person: Person) -> (() -> Void)? {
+        guard let data = person.voiceClipData else { return nil }
+        return { services.voiceClips.play(data, id: person.id) }
     }
 
     private func call(_ person: Person) {
@@ -52,7 +65,9 @@ struct PeopleView: View {
 
 private struct PersonCard: View {
     let person: Person
+    var isPlayingClip: Bool = false
     let onCall: () -> Void
+    var onPlayClip: (() -> Void)? = nil
     var onEdit: (() -> Void)? = nil
 
     var body: some View {
@@ -100,14 +115,32 @@ private struct PersonCard: View {
                     }
                 }
 
-                Button(action: onCall) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "phone.fill").font(.system(size: 13, weight: .semibold))
-                        Text("Call \(person.name)")
+                HStack(spacing: 10) {
+                    Button(action: onCall) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "phone.fill").font(.system(size: 13, weight: .semibold))
+                            Text("Call \(person.name)")
+                        }
+                    }
+                    .buttonStyle(SoftButtonStyle())
+                    .accessibilityLabel("Call \(person.name)")
+
+                    if let onPlayClip {
+                        Button(action: onPlayClip) {
+                            HStack(spacing: 8) {
+                                Image(systemName: isPlayingClip ? "stop.fill" : "waveform")
+                                    .font(.system(size: 13, weight: .semibold))
+                                Text(isPlayingClip ? "Stop" : "Their voice")
+                            }
+                        }
+                        .buttonStyle(SoftButtonStyle(fill: Theme.sageSoft, foreground: Theme.sage))
+                        .accessibilityLabel(
+                            isPlayingClip
+                                ? "Stop playing \(person.name)'s voice"
+                                : "Hear \(person.name)'s voice"
+                        )
                     }
                 }
-                .buttonStyle(SoftButtonStyle())
-                .accessibilityLabel("Call \(person.name)")
             }
         }
     }

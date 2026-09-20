@@ -66,6 +66,7 @@ struct PersonaPickerSheet: View {
                 PersonContactCardView(mode: .create(presetCaregiver: true)) { created in
                     select(created)
                 }
+                .environment(services)
             }
         }
     }

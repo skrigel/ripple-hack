@@ -19,6 +19,7 @@ final class RippleServices {
     let comprehension: ComprehensionEngine
     let session: CompanionSession
     let persona: PersonaSession
+    let voiceClips: VoiceClipService
 
     init() {
         let speech = SpeechManager()
@@ -32,5 +33,12 @@ final class RippleServices {
             speech: speech, comprehension: comprehension, phrasing: phrasing
         )
         self.persona = PersonaSession()
+
+        // A recorded voice and a synthesized one must not talk over each other.
+        // Wired here rather than inside `VoiceClipService` so the one-directional
+        // rule holds: the clip service still knows nothing about the synthesizer.
+        let voiceClips = VoiceClipService()
+        voiceClips.onBeforeAudio = { speech.stop() }
+        self.voiceClips = voiceClips
     }
 }

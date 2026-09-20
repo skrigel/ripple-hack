@@ -26,7 +26,6 @@ struct HomeView: View {
             todaySection
         }
         .padding(.horizontal, 20)
-        .onAppear(perform: speakGreeting)
         .sheet(item: $eventFormMode) { mode in
             EventFormView(mode: mode)
                 .environment(\.currentCaregiver, currentCaregiver)
@@ -108,6 +107,11 @@ struct HomeView: View {
     /// A greeting says someone is here without reciting where they are —
     /// the full orientation line is there when it is asked for, and is spoken
     /// on the "Where am I?" and "Am I safe?" paths.
+    ///
+    /// Deliberately not wired up. `onAppear` fires every time Home is
+    /// reselected, not once per launch, so this greeted the person on every
+    /// tab switch. Kept for when there is a real "first view of the day"
+    /// signal to hang it on.
     private func speakGreeting() {
         guard let facts = groundingFacts else { return }
         services.speech.speak(

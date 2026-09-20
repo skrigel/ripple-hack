@@ -31,6 +31,19 @@ enum AudioSessionCoordinator {
         )
     }
 
+    /// Capturing a voice clip.
+    ///
+    /// `.playAndRecord` rather than `.record` because the caregiver previews
+    /// the clip the moment they stop, and the resting playback configuration
+    /// is restored as soon as the recorder finishes either way.
+    static func configureForRecording() {
+        apply(
+            category: .playAndRecord,
+            mode: .default,
+            options: [.defaultToSpeaker, .allowBluetoothHFP]
+        )
+    }
+
     private static func apply(
         category: AVAudioSession.Category,
         mode: AVAudioSession.Mode,
