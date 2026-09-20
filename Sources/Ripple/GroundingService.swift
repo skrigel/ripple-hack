@@ -51,38 +51,47 @@ enum GroundingService {
     // `Event` whose `when` has not arrived yet. These are the only places that
     // distinction is drawn, and all of them are plain date comparisons.
 
+    /// Pairs each event with its known date, dropping any whose timing is
+    /// unknown — those exist only for the assistant to draw on (see
+    /// `GroundingDigest.untimed`), never for a dated view like these.
+    private static func timed(_ events: [Event]) -> [(event: Event, when: Date)] {
+        events.compactMap { event in event.when.map { (event, $0) } }
+    }
+
     /// Everything on a given day, soonest first. Includes later-today events.
     static func events(_ events: [Event], on day: Date, calendar: Calendar = .current) -> [Event] {
-        events
+        timed(events)
             .filter { calendar.isDate($0.when, inSameDayAs: day) }
             .sorted { $0.when < $1.when }
+            .map(\.event)
     }
 
     /// What has already happened, most recent first. Not shown on Home, but
     /// kept so the app can answer "what happened last week".
     static func past(_ events: [Event], before date: Date, limit: Int = .max) -> [Event] {
-        events
+        timed(events)
             .filter { $0.when < date }
             .sorted { $0.when > $1.when }
             .prefix(limit)
-            .map { $0 }
+            .map(\.event)
     }
 
     /// What is still to come, soonest first.
     static func upcoming(_ events: [Event], after date: Date, limit: Int = .max) -> [Event] {
-        events
+        timed(events)
             .filter { $0.when > date }
             .sorted { $0.when < $1.when }
             .prefix(limit)
-            .map { $0 }
+            .map(\.event)
     }
 
     /// The day's single timeline, merging the event log with any conversation
     /// that is still running.
     ///
-    /// A *finished* conversation is deliberately excluded: on close it writes
-    /// its recap into the event log as an `Event`, so including it here too
-    /// would show the same chat twice.
+    /// A *finished* conversation is deliberately excluded: on close, anything
+    /// worth remembering from it is already written into the event log as one
+    /// or more `Event`s, so including the conversation here too would risk
+    /// showing the same thing twice.
     static func timeline(
         events: [Event],
         conversations: [Conversation],
@@ -114,8 +123,8 @@ enum GroundingService {
         calendar: Calendar = .current
     ) -> String {
         let base = spokenGrounding(facts: facts, at: date, calendar: calendar)
-        guard let recent else { return base }
-        return base + " \(sentenceCased(recent.title)) \(relativePast(from: recent.when, to: date))."
+        guard let recent, let when = recent.when else { return base }
+        return base + " \(sentenceCased(recent.title)) \(relativePast(from: when, to: date))."
     }
 
     // MARK: Conversations
@@ -157,8 +166,8 @@ enum GroundingService {
 
         case .whatTime:
             let base = "It's \(timeOfDay(date, calendar: calendar)), on a \(weekdayAndPartOfDay(at: date, calendar: calendar))."
-            guard let next = digest.upcoming.first else { return base }
-            return base + " \(sentenceCased(next.title)) is at \(timeOfDay(next.when, calendar: calendar))."
+            guard let next = digest.upcoming.first, let when = next.when else { return base }
+            return base + " \(sentenceCased(next.title)) is at \(timeOfDay(when, calendar: calendar))."
 
         case .whatHappenedToday:
             return happenedToday(digest, at: date, calendar: calendar)
@@ -251,22 +260,24 @@ enum GroundingService {
     private static func happenedToday(
         _ digest: GroundingDigest, at date: Date, calendar: Calendar
     ) -> String {
-        let done = digest.today.filter { $0.hasHappened(by: date) }
-        guard !done.isEmpty else {
-            return "You're just getting started today, \(digest.facts.userName). It's been a quiet morning."
-        }
-        let phrases = done.map { "\(lowercasedFirst($0.title)) at \(timeOfDay($0.when, calendar: calendar))" }
+        let quiet = "You're just getting started today, \(digest.facts.userName). It's been a quiet morning."
+        let phrases = digest.today
+            .filter { $0.hasHappened(by: date) }
+            .compactMap { event -> String? in
+                event.when.map { "\(lowercasedFirst(event.title)) at \(timeOfDay($0, calendar: calendar))" }
+            }
+        guard !phrases.isEmpty else { return quiet }
         return "You've had a good day so far. " + sentenceCased(list(phrases)) + "."
     }
 
     private static func comingUp(
         _ digest: GroundingDigest, at date: Date, calendar: Calendar
     ) -> String {
-        let next = Array(digest.upcoming.prefix(3))
-        guard !next.isEmpty else { return "Nothing else is planned. You can rest easy." }
-        let phrases = next.map {
-            "\(lowercasedFirst($0.title)) \(dayPhrase(for: $0.when, at: date, calendar: calendar))"
+        let none = "Nothing else is planned. You can rest easy."
+        let phrases = digest.upcoming.prefix(3).compactMap { event -> String? in
+            event.when.map { "\(lowercasedFirst(event.title)) \(dayPhrase(for: $0, at: date, calendar: calendar))" }
         }
+        guard !phrases.isEmpty else { return none }
         return "Coming up, you have " + list(phrases) + "."
     }
 
@@ -353,7 +364,8 @@ enum GroundingService {
 // MARK: - Timeline
 
 /// One line in a day's timeline: a logged event, or a conversation that is
-/// still running. Finished conversations arrive here as their recap `Event`.
+/// still running. Finished conversations arrive here, if at all, as whatever
+/// `Event`s were extracted from them.
 enum TimelineEntry: Identifiable {
     case event(Event)
     case conversation(Conversation)
@@ -365,9 +377,12 @@ enum TimelineEntry: Identifiable {
         }
     }
 
+    /// `.event` only ever reaches a timeline via `GroundingService.events(on:)`,
+    /// which already excludes unknown timing — `?? .distantPast` is a graceful
+    /// fallback for that invariant, never expected to actually fire.
     var when: Date {
         switch self {
-        case .event(let event): event.when
+        case .event(let event): event.when ?? .distantPast
         case .conversation(let conversation): conversation.startedAt
         }
     }
@@ -397,6 +412,10 @@ struct GroundingDigest {
     let today: [Event]
     /// After now, soonest first — including later today.
     let upcoming: [Event]
+    /// Events with no known date — e.g. pulled from a conversation with no
+    /// specific time stated. Never shown on screen, but still here so the
+    /// assistant can be asked about them.
+    let untimed: [Event]
     let comfortTopics: [ComfortTopic]
 
     init(
@@ -413,6 +432,7 @@ struct GroundingDigest {
         self.recentPast = GroundingService.past(events, before: startOfToday, limit: pastLimit)
         self.today = GroundingService.events(events, on: date, calendar: calendar)
         self.upcoming = GroundingService.upcoming(events, after: date, limit: upcomingLimit)
+        self.untimed = events.filter { $0.when == nil }
         self.comfortTopics = comfortTopics
     }
 
@@ -431,6 +451,7 @@ struct GroundingDigest {
         lines.append(contentsOf: section("Today", today.map { describe($0, calendar: calendar) }))
         lines.append(contentsOf: section("Coming up", upcoming.map { describe($0, calendar: calendar) }))
         lines.append(contentsOf: section("Earlier", recentPast.map { describe($0, calendar: calendar) }))
+        lines.append(contentsOf: section("Also mentioned, exact time unknown", untimed.map(\.title)))
         lines.append(contentsOf: section("Likes talking about", comfortTopics.map(\.title)))
 
         return lines.joined(separator: "\n")
@@ -440,8 +461,10 @@ struct GroundingDigest {
         items.isEmpty ? [] : ["\(title):"] + items.map { "- \($0)" }
     }
 
+    /// Only ever called with `today`/`upcoming`/`recentPast`, which are
+    /// already filtered to a known `when` — see `GroundingService.timed`.
     private func describe(_ event: Event, calendar: Calendar) -> String {
-        let time = GroundingService.timeOfDay(event.when, calendar: calendar)
+        let time = event.when.map { GroundingService.timeOfDay($0, calendar: calendar) } ?? "an unknown time"
         let who = event.participants.map(\.name)
         let suffix = who.isEmpty ? "" : " (with \(GroundingService.list(who)))"
         return "\(time) — \(event.title)\(suffix)"

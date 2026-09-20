@@ -12,8 +12,9 @@ import SwiftData
 ///
 /// A session only ever begins because the person asked for it. There is no
 /// wake word and nothing is heard in between. It ends when they end it, when
-/// the quiet runs long, or when the privacy window closes — and on the way out
-/// it writes a single plain recap into the event log.
+/// the quiet runs long, or when the privacy window closes — and on the way
+/// out the whole transcript is read once, to pull out anything worth
+/// remembering, and then discarded for good.
 @Observable
 @MainActor
 final class CompanionSession {
@@ -46,22 +47,18 @@ final class CompanionSession {
     private let phrasing: PhrasingEngine
     private let settings: SummarizationSettings
 
-    // Conversation state. Raw turns live here and nowhere else, and are never
-    // written to the store. `pendingTurns` is held only until the next fold;
-    // `fullTranscript` spans the whole session so the close-time significance
-    // check can read it, and is discarded the moment the session closes.
+    // Conversation state. The transcript lives here and nowhere else: it is
+    // read once, when the session closes, to find anything worth
+    // remembering, and is discarded the moment that is done. It is never
+    // itself written to the store.
     private var conversation: Conversation?
-    private var digest = ConversationDigest()
-    private var pendingTurns: [String] = []
-    private var pendingCharacters = 0
     private var fullTranscript: [String] = []
     /// How many times the person actually said something. A session where
     /// nobody spoke is not a conversation and leaves no trace.
     private var turnsHeard = 0
-    /// Refreshed on each turn so folds and answers see the current store.
+    /// Refreshed on each turn so answers see the current store.
     private var store: ConversationStore?
 
-    private var foldChain: Task<Void, Never>?
     private var expiryTask: Task<Void, Never>?
     private var silenceTask: Task<Void, Never>?
 
@@ -92,9 +89,6 @@ final class CompanionSession {
         guard phase == .closed else { return }
         phase = .opening
         listeningProblem = nil
-        digest = ConversationDigest()
-        pendingTurns = []
-        pendingCharacters = 0
         fullTranscript = []
         turnsHeard = 0
         self.store = store
@@ -135,61 +129,83 @@ final class CompanionSession {
 
         await listening.stop()
 
-        // Let any fold already running finish, then fold the tail, so the last
-        // thing said still counts toward the recap.
-        await foldChain?.value
-        fold(store: store, force: true)
-        await foldChain?.value
-
         if let conversation {
             if turnsHeard == 0 {
                 // Opened and never spoken into. Leaving a "you had a chat"
                 // entry would be a memory of something that did not happen.
                 store.context.delete(conversation)
             } else {
-                await writeRecap(for: conversation, store: store)
+                await writeEvents(for: conversation, store: store)
             }
         }
 
         conversation = nil
         self.store = nil
-        pendingTurns = []
-        pendingCharacters = 0
         fullTranscript = []
         turnsHeard = 0
         phase = .closed
     }
 
-    /// Judges the whole transcript once, and only writes a summary — to the
-    /// conversation and to the event log — when the model actually judged it
-    /// significant. With no model verdict there is nothing to say that is not
-    /// already sitting in the store as plain facts (who, when), so nothing
-    /// beyond that bookkeeping gets written. The transcript itself never
-    /// reaches the store; it lives only long enough for this one call.
-    private func writeRecap(for conversation: Conversation, store: ConversationStore) async {
-        let participants = digest.mentionedPeople(from: store.people)
+    /// Reads the whole transcript once and turns anything worth remembering
+    /// into events. This is the only point the transcript is used before it
+    /// is discarded — nothing here is written to the store as raw text.
+    private func writeEvents(for conversation: Conversation, store: ConversationStore) async {
         let transcript = fullTranscript.joined(separator: " ")
-        let judged = await comprehension.summarizeSignificance(transcript: transcript, people: store.people)
+        let participants = Self.mentionedPeople(in: transcript, from: store.people)
 
         conversation.endedAt = .now
         conversation.participants = participants
         conversation.lastModified = .now
 
-        guard let judged else { return }
-        let summary = judged.summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard judged.isSignificant, !summary.isEmpty else { return }
+        let candidates = await comprehension.extractEvents(transcript: transcript, people: store.people)
+        for candidate in candidates {
+            guard let event = Self.makeEvent(from: candidate, conversation: conversation, participants: participants)
+            else { continue }
+            store.context.insert(event)
+        }
+    }
 
-        conversation.summary = summary
+    /// Turns one candidate into a real event, or discards it.
+    ///
+    /// A stated date is parsed deterministically — the model names *what*
+    /// happened and *whether* it is past or upcoming, never *when*, exactly.
+    /// An upcoming event with no resolvable date would sit in the store with
+    /// no way to later tell whether it has happened yet, so it is dropped
+    /// rather than guessed at. A past event with no resolvable date is still
+    /// worth keeping — it happened, the exact time just was not caught — so
+    /// it is kept with `when = nil`: invisible in the UI's dated views, but
+    /// still there for the assistant to draw on.
+    private static func makeEvent(
+        from candidate: CandidateEvent,
+        conversation: Conversation,
+        participants: [Person]
+    ) -> Event? {
+        if let date = resolveDate(from: candidate.statedWhen) {
+            return Event(title: candidate.title, when: date, source: .conversation,
+                         conversationID: conversation.id, participants: participants)
+        }
+        guard candidate.timing == .past else { return nil }
+        return Event(title: candidate.title, when: nil, source: .conversation,
+                     conversationID: conversation.id, participants: participants)
+    }
 
-        // The recap joins the one event log, so the day reads as one story.
-        let event = Event(
-            title: summary,
-            when: conversation.startedAt,
-            source: .conversation,
-            conversationID: conversation.id,
-            participants: participants
-        )
-        store.context.insert(event)
+    /// Parses a stated phrase like "Thursday at 3" into a real date. Only
+    /// ever asked to resolve a phrase the model copied verbatim from what was
+    /// said — never anything it computed itself.
+    private static func resolveDate(from phrase: String) -> Date? {
+        let trimmed = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.date.rawValue)
+        else { return nil }
+        let range = NSRange(trimmed.startIndex..., in: trimmed)
+        return detector.firstMatch(in: trimmed, range: range)?.date
+    }
+
+    /// Who the whole transcript touched on, deterministically. Applied to
+    /// every event from the session — there is no per-event granularity.
+    private static func mentionedPeople(in transcript: String, from people: [Person]) -> [Person] {
+        let normalized = QueryInterpreter.normalize(transcript)
+        return people.filter { !$0.name.isEmpty && normalized.contains(QueryInterpreter.normalize($0.name)) }
     }
 
     // MARK: - One turn
@@ -200,8 +216,6 @@ final class CompanionSession {
         self.store = store
 
         turnsHeard += 1
-        pendingTurns.append(turn)
-        pendingCharacters += turn.count
         fullTranscript.append(turn)
         restartSilenceTimer(store: store)
 
@@ -275,45 +289,11 @@ final class CompanionSession {
         speech.speak(line, priority: priority)
     }
 
-    /// The voice has stopped, so the microphone can reopen. This is also the
-    /// dead time a fold belongs in — the person is thinking, nothing is
-    /// blocked on it, and the model call costs no perceived latency.
+    /// The voice has stopped, so the microphone can reopen.
     private func handleFinishedSpeaking() {
         guard phase == .speaking else { return }
         phase = .listening
         listening.resume()
-        if let store { fold(store: store) }
-    }
-
-    // MARK: - Rolling the digest forward
-
-    /// Folds buffered turns into the digest when there are enough of them.
-    ///
-    /// Folds are serialised: two at once would race on `digest` and the merge
-    /// order would stop being deterministic.
-    private func fold(store: ConversationStore, force: Bool = false) {
-        let ready = pendingTurns.count >= settings.turnsPerBeat
-            || pendingCharacters >= settings.charactersPerBeat
-        guard force || ready, !pendingTurns.isEmpty else { return }
-
-        let batch = pendingTurns
-        pendingTurns = []
-        pendingCharacters = 0
-
-        let people = store.people
-        let topics = store.comfortTopics
-        let usesModel = settings.usesModelExtraction
-        let previous = foldChain
-
-        foldChain = Task { [weak self] in
-            await previous?.value
-            guard let self else { return }
-            let beat = await self.comprehension.extractBeat(
-                from: batch, people: people, topics: topics, usesModel: usesModel
-            )
-            guard let beat else { return }
-            self.digest.fold(beat, known: people)
-        }
     }
 
     // MARK: - Timers
@@ -346,6 +326,25 @@ final class CompanionSession {
     }
 }
 
+/// How long a session may run, and how patient it is with silence, before it
+/// closes itself for privacy.
+struct SummarizationSettings: Codable, Equatable {
+    /// The session auto-closes after this long, for privacy.
+    var sessionWindow: TimeInterval
+    /// Give up this quickly if nobody says anything at all — an accidental tap
+    /// should not hold the microphone open.
+    var openingSilenceTimeout: TimeInterval
+    /// Auto-close once a conversation under way has gone quiet this long.
+    /// Generous on purpose: finding a word can take a while.
+    var silenceTimeout: TimeInterval
+
+    static let `default` = SummarizationSettings(
+        sessionWindow: Conversation.sessionWindow,
+        openingSilenceTimeout: 10,
+        silenceTimeout: 90
+    )
+}
+
 /// The slice of the store a conversation needs, read live.
 ///
 /// These are deliberately computed rather than arrays handed over once. A
@@ -362,8 +361,11 @@ struct ConversationStore {
         fetch(FetchDescriptor<GroundingFacts>()).first
     }
 
+    // Unsorted: `when` is optional now, so `SortDescriptor` can't sort by it
+    // directly. `GroundingService`/`GroundingDigest` re-sort after filtering
+    // to known dates.
     var events: [Event] {
-        fetch(FetchDescriptor<Event>(sortBy: [SortDescriptor(\.when)]))
+        fetch(FetchDescriptor<Event>())
     }
 
     var people: [Person] {

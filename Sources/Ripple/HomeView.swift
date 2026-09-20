@@ -13,7 +13,9 @@ struct HomeView: View {
     @Environment(\.currentCaregiver) private var currentCaregiver
 
     @Query private var facts: [GroundingFacts]
-    @Query(sort: \Event.when, order: .forward) private var events: [Event]
+    // Unsorted: `when` is optional now, so SwiftData can't sort by it directly.
+    // Every consumer below re-sorts after filtering to known dates anyway.
+    @Query private var events: [Event]
     @Query(sort: \Conversation.startedAt, order: .forward) private var conversations: [Conversation]
 
     @State private var eventFormMode: EventFormView.Mode?

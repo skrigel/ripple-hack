@@ -79,58 +79,22 @@ final class ComprehensionEngine {
         #endif
     }
 
-    // MARK: - Understanding a conversation
+    // MARK: - Understanding a finished conversation
 
-    /// Extracts one beat from a handful of turns, for folding into the digest.
-    ///
-    /// Returns `nil` when there was nothing worth recording. The deterministic
-    /// pass alone — matching against the comfort topics a caregiver entered —
-    /// is often enough, and it is all that happens when there is no model.
-    func extractBeat(
-        from turns: [String],
-        people: [Person],
-        topics: [ComfortTopic],
-        usesModel: Bool
-    ) async -> ConversationBeat? {
-        guard !turns.isEmpty else { return nil }
-        let text = turns.joined(separator: " ")
-
-        // Topics the caregiver already told us this person lights up about.
-        let known = QueryInterpreter.resolveTopics(in: text, topics: topics).map(\.title)
-        let named = people.filter { QueryInterpreter.normalize(text).contains(QueryInterpreter.normalize($0.name)) }
-
-        guard usesModel, capability == .onDevice else {
-            guard !known.isEmpty || !named.isEmpty else { return nil }
-            return ConversationBeat(topics: known, peopleNamed: named.map(\.name))
-        }
-
-        let extracted = await modelBeat(text: text, people: people)
-        guard let extracted else {
-            guard !known.isEmpty || !named.isEmpty else { return nil }
-            return ConversationBeat(topics: known, peopleNamed: named.map(\.name))
-        }
-
-        // The deterministic finds are trusted outright; the model's are extra.
-        return ConversationBeat(
-            topics: known + extracted.topics,
-            peopleNamed: Set(named.map(\.name) + extracted.peopleNamed).sorted(),
-            tone: extracted.tone
-        )
-    }
-
-    // MARK: - Summarizing a finished transcript
-
-    /// Summarizes a whole session's transcript and judges whether it is
-    /// significant enough to remember — the gate before anything is written
-    /// to the event log. Returns `nil` off-device or on any failure, so the
-    /// caller always has a deterministic fallback to reach for.
-    func summarizeSignificance(transcript: String, people: [Person]) async -> TranscriptSummary? {
+    /// Pulls candidate events out of a whole session's transcript in one
+    /// pass, rather than piecing them together turn by turn — a full
+    /// transcript keeps context (a plan mentioned early, dated later) that
+    /// chunked extraction would lose. Returns an empty array off-device or on
+    /// any failure; there is nothing to fall back to, which is fine — a
+    /// session with no model available simply adds no events, same as one
+    /// where nothing worth remembering was said.
+    func extractEvents(transcript: String, people: [Person]) async -> [CandidateEvent] {
         #if canImport(FoundationModels)
-        guard #available(iOS 26, *), capability == .onDevice else { return nil }
+        guard #available(iOS 26, *), capability == .onDevice else { return [] }
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
+        guard !trimmed.isEmpty else { return [] }
         do {
-            let session = LanguageModelSession(instructions: Self.summaryInstructions)
+            let session = LanguageModelSession(instructions: Self.eventExtractionInstructions)
             let roster = people.map(\.name).joined(separator: ", ")
             let result = try await session.respond(
                 to: """
@@ -138,54 +102,15 @@ final class ComprehensionEngine {
                 Transcript of a conversation:
                 \(trimmed)
                 """,
-                generating: TranscriptSummary.self
+                generating: GenerableTranscriptEvents.self
             )
-            return result.content
+            return result.content.events.map(Self.portable)
         } catch {
-            return nil
+            return []
         }
         #else
-        return nil
+        return []
         #endif
-    }
-
-    private func modelBeat(text: String, people: [Person]) async -> ConversationBeat? {
-        #if canImport(FoundationModels)
-        guard #available(iOS 26, *) else { return nil }
-        do {
-            let session = LanguageModelSession(instructions: Self.extractionInstructions)
-            let roster = people.map(\.name).joined(separator: ", ")
-            // Non-streaming on purpose: folds run in the background between
-            // turns, where streaming is more likely to be rate limited.
-            let result = try await session.respond(
-                to: """
-                People in their life: \(roster.isEmpty ? "(none recorded)" : roster)
-                Part of a conversation:
-                \(text)
-                """,
-                generating: ExtractedBeat.self
-            )
-            return ConversationBeat(
-                topics: result.content.topics.compactMap(Self.cleanTopic),
-                peopleNamed: result.content.peopleMentioned,
-                tone: BeatTone(rawValue: result.content.tone.rawValue) ?? .calm
-            )
-        } catch {
-            return nil
-        }
-        #else
-        return nil
-        #endif
-    }
-
-    /// Topics are labels, not sentences. Anything long enough to be a claim is
-    /// discarded rather than trimmed — it would be a statement about the
-    /// person's life that no record backs up.
-    private static func cleanTopic(_ raw: String) -> String? {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        let words = trimmed.split(separator: " ")
-        guard !trimmed.isEmpty, words.count <= 4, trimmed.count <= 40 else { return nil }
-        return trimmed
     }
 
     // MARK: - Turning model output into store references
@@ -213,6 +138,18 @@ final class ComprehensionEngine {
         }
     }
 
+    /// Strips a `@Generable` candidate down to the plain, always-available
+    /// type `CompanionSession` actually consumes — the wire type is not safe
+    /// to hand a caller that has no availability guard of its own.
+    @available(iOS 26, *)
+    private static func portable(_ generable: GenerableCandidateEvent) -> CandidateEvent {
+        CandidateEvent(
+            title: generable.title,
+            timing: generable.timing == .past ? .past : .upcoming,
+            statedWhen: generable.statedWhen
+        )
+    }
+
     private static let routingInstructions = """
     You sort what an older person said into fixed categories. You never answer \
     them and never write a sentence for them to read.
@@ -231,21 +168,15 @@ final class ComprehensionEngine {
     you are given, and leave the name empty if it is not on that list.
     """
 
-    private static let extractionInstructions = """
-    You note what a conversation was about. You never write a summary sentence, \
-    never quote, and never record anything personal, medical, or sensitive. \
-    List only short subject labels of one to three words, such as "the garden" \
-    or "her trip". If a stretch of talk had no clear subject, return no topics. \
-    Only list names that appear in the list you are given. Judge tone from how \
-    the person sounds: warm, calm, unsettled, or confused.
-    """
-
-    private static let summaryInstructions = """
-    You summarize a conversation with an older person, for their caregiver. \
-    Write one or two short, plain sentences describing what was talked about, \
-    in the third person. Mark it significant only if it contains a specific \
-    event, plan, visit, or piece of news worth remembering later — ordinary \
-    greetings, small talk, or chat with no clear subject is not significant.
+    private static let eventExtractionInstructions = """
+    You read a transcript of a conversation with an older person and pull out \
+    distinct events worth remembering later: things that already happened, \
+    plans, visits, or news. Skip greetings and small talk — if nothing in the \
+    conversation is worth remembering, return no events. For each one, write a \
+    short plain-language title in the third person, say whether it already \
+    happened or is still to come, and copy any specific day or time that was \
+    stated exactly as said. Leave the time blank if none was given, and never \
+    invent one.
     """
     #endif
 }
@@ -284,46 +215,62 @@ struct ClassifiedQuery {
     var personName: String
 }
 
+/// Whether a candidate event was described as something that already
+/// happened, or a plan for later. Never a date — see `GenerableCandidateEvent`.
 @available(iOS 26, *)
 @Generable
-enum GenerableTone {
-    case warm, calm, unsettled, confused
+enum GenerableEventTiming {
+    case past
+    case upcoming
 }
 
+/// One event pulled from a transcript. `statedWhen` is a verbatim quote, not
+/// a judgement — a caller resolves it into a real date deterministically, or
+/// discards the candidate, rather than trusting the model's own date math.
+///
+/// This wire type is `@available(iOS 26, *)`, like every `@Generable` type,
+/// so it is never handed to a caller directly — `ComprehensionEngine.portable`
+/// converts it to the always-available `CandidateEvent` before it leaves
+/// this file.
 @available(iOS 26, *)
 @Generable
-struct ExtractedBeat {
-    @Guide(description: "Up to three short subject labels, one to three words each, such as \"the garden\"")
-    var topics: [String]
+struct GenerableCandidateEvent {
+    @Guide(description: "A short, plain-language title, third person, e.g. \"Maya visited and brought photographs\"")
+    var title: String
 
-    @Guide(description: "Names of people talked about, copied exactly from the list provided")
-    var peopleMentioned: [String]
+    @Guide(description: "Whether this was described as something that already happened, or a plan for later")
+    var timing: GenerableEventTiming
 
-    @Guide(description: "How this part of the conversation sounded")
-    var tone: GenerableTone
+    @Guide(description: "Only if a specific day or time was stated explicitly (e.g. \"Thursday at 3\", \"tomorrow morning\") — copy the phrase as said. Leave empty if no specific time was mentioned.")
+    var statedWhen: String
 }
 
-@available(iOS 26, *)
-extension GenerableTone {
-    var rawValue: String {
-        switch self {
-        case .warm: "warm"
-        case .calm: "calm"
-        case .unsettled: "unsettled"
-        case .confused: "confused"
-        }
-    }
-}
-
-/// A finished transcript, reduced to the two things the event log needs: a
-/// plain sentence, and whether it clears the bar to be remembered at all.
+/// The whole output for one session's transcript.
 @available(iOS 26, *)
 @Generable
-struct TranscriptSummary {
-    @Guide(description: "One or two short, plain sentences summarizing what was talked about, in the third person")
-    var summary: String
-
-    @Guide(description: "True only if this contains a specific event, plan, visit, or piece of news worth remembering later")
-    var isSignificant: Bool
+struct GenerableTranscriptEvents {
+    @Guide(description: "Every distinct event, plan, or piece of news mentioned in this conversation that's worth remembering later — omit greetings and small talk entirely")
+    var events: [GenerableCandidateEvent]
 }
 #endif
+
+// MARK: - Portable output
+//
+// `extractEvents` cannot return a `@Generable` type directly: those are all
+// `@available(iOS 26, *)`, and a caller built for this app's iOS 17 minimum
+// has no availability guard of its own to receive one. These plain mirrors
+// are always available, at the cost of the small bridging step in `portable`.
+
+/// Whether a candidate event was described as something that already
+/// happened, or a plan for later. Never a date — see `CandidateEvent`.
+enum EventTiming {
+    case past
+    case upcoming
+}
+
+/// One event pulled from a transcript, safe for any caller to hold.
+struct CandidateEvent {
+    var title: String
+    var timing: EventTiming
+    var statedWhen: String
+}

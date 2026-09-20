@@ -8,7 +8,7 @@ import SwiftUI
 // rather than raw strings scattered through the UI.
 
 /// How an event got into the log. There are exactly two trusted ingestion
-/// paths (a caregiver note, a conversation recap) plus an optional third for
+/// paths (a caregiver note, a conversation) plus an optional third for
 /// task-adjacent confirmations.
 ///
 /// A `.confirmation` is a *memory record*, never proof a physical action
@@ -115,10 +115,14 @@ final class Event {
     var id: UUID
     var title: String
     var detail: String
-    var when: Date
+    /// `nil` when only rough timing was caught — e.g. pulled from a
+    /// conversation with no specific day or time stated. Such events are kept
+    /// for the assistant to draw on, but excluded from anything that lists
+    /// events by date (see `GroundingService.events/past/upcoming`).
+    var when: Date?
     private var sourceRaw: String
-    /// Set when this event is the recap of a finished conversation, so the two
-    /// stay linked without duplicating the summary text.
+    /// Set when this event came from a conversation, linking the two without
+    /// duplicating any text.
     var conversationID: UUID?
     /// The caregiver who logged this entry, when known. Provenance, not
     /// involvement — separate from `participants`. `nil` for patient-authored
@@ -133,7 +137,7 @@ final class Event {
         id: UUID = UUID(),
         title: String,
         detail: String = "",
-        when: Date,
+        when: Date?,
         source: EventSource = .caregiverNote,
         conversationID: UUID? = nil,
         createdByPersonID: UUID? = nil,
@@ -156,21 +160,28 @@ final class Event {
         set { sourceRaw = newValue.rawValue }
     }
 
-    func hasHappened(by date: Date = .now) -> Bool { when <= date }
+    /// `false` for an event with unknown timing — it cannot be placed on
+    /// either side of `date`, so it never counts as "done" in a dated view.
+    func hasHappened(by date: Date = .now) -> Bool {
+        guard let when else { return false }
+        return when <= date
+    }
 }
 
 /// A conversation session — with the app, or with a family member through it.
 ///
 /// Only ever past or ongoing: `endedAt == nil` means it is still running. The
-/// session auto-terminates after a fixed window for privacy; on close the model
-/// summarises it into `summary`, which is then written to the event log.
+/// session auto-terminates after a fixed window for privacy; on close the
+/// whole transcript is read once and turned directly into `Event`s, and the
+/// transcript itself is discarded. `summary` is not populated by that step —
+/// it exists for a future caregiver-facing note, and is empty today.
 @Model
 final class Conversation {
     var id: UUID
     var startedAt: Date
     /// `nil` while the conversation is ongoing.
     var endedAt: Date?
-    /// The plain recap, written once on close. Empty while ongoing.
+    /// Empty today — see the type's doc comment.
     var summary: String
     /// Who the person was talking to. Empty means they were talking to the app.
     @Relationship(inverse: \Person.conversations)

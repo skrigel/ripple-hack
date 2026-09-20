@@ -33,7 +33,10 @@ struct EventFormView: View {
         case .edit(let event):
             _title = State(initialValue: event.title)
             _detail = State(initialValue: event.detail)
-            _when = State(initialValue: event.when)
+            // Only conversation-derived events ever have unknown timing, and
+            // those aren't editable (see PastEventsView/HomeView) — `.now` is
+            // a fallback the type system requires but this path shouldn't hit.
+            _when = State(initialValue: event.when ?? .now)
             _participantIDs = State(initialValue: Set(event.participants.map(\.id)))
         }
     }

@@ -10,7 +10,9 @@ import SwiftData
 /// the patient's own view has neither affordance.
 struct PastEventsView: View {
     @Environment(\.currentCaregiver) private var currentCaregiver
-    @Query(sort: \Event.when, order: .reverse) private var events: [Event]
+    // Unsorted: `when` is optional now. `GroundingService.past` re-sorts
+    // after filtering to known dates.
+    @Query private var events: [Event]
 
     @State private var eventFormMode: EventFormView.Mode?
 
@@ -90,7 +92,7 @@ struct PastEventsView: View {
                 }
                 .accessibilityLabel("Edit event")
             }
-            Text(GroundingService.timeOfDay(event.when))
+            Text(event.when.map { GroundingService.timeOfDay($0) } ?? "")
                 .font(Theme.font(12))
                 .foregroundStyle(Theme.mutedText)
         }
@@ -107,10 +109,11 @@ struct PastEventsView: View {
     /// day's events listed most recent first.
     private var days: [(day: Date, events: [Event])] {
         let calendar = Calendar.current
+        // `past` only ever returns events with a known `when`.
         let earlier = GroundingService.past(events, before: .now)
 
-        return Dictionary(grouping: earlier) { calendar.startOfDay(for: $0.when) }
-            .map { (day: $0.key, events: $0.value.sorted { $0.when > $1.when }) }
+        return Dictionary(grouping: earlier) { calendar.startOfDay(for: $0.when ?? .distantPast) }
+            .map { (day: $0.key, events: $0.value.sorted { ($0.when ?? .distantPast) > ($1.when ?? .distantPast) }) }
             .sorted { $0.day > $1.day }
     }
 

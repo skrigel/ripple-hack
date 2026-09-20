@@ -14,7 +14,9 @@ struct AssistantSheet: View {
     private var session: CompanionSession { services.session }
 
     @Query private var facts: [GroundingFacts]
-    @Query(sort: \Event.when) private var events: [Event]
+    // Unsorted: `when` is optional now. `GroundingDigest` re-sorts after
+    // filtering to known dates.
+    @Query private var events: [Event]
     @Query(sort: \Person.sortOrder) private var people: [Person]
     @Query(sort: \ComfortTopic.sortOrder) private var comfortTopics: [ComfortTopic]
 
