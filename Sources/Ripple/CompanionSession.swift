@@ -301,12 +301,22 @@ final class CompanionSession {
     /// The privacy window. Non-negotiable: the session closes itself.
     private func startExpiryTimer(store: ConversationStore) {
         expiryTask?.cancel()
-        let window = settings.sessionWindow
+        let window = sessionWindow(for: store)
         expiryTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(window))
             guard !Task.isCancelled, let self else { return }
             await self.close(store: store)
         }
+    }
+
+    /// Caregiver-configured session length, read live so a caregiver's edit
+    /// takes effect on the next conversation without restarting the app.
+    /// Falls back to the default only if the store was never seeded.
+    private func sessionWindow(for store: ConversationStore) -> TimeInterval {
+        guard let minutes = store.facts?.sessionTimeoutMinutes, minutes > 0 else {
+            return settings.sessionWindow
+        }
+        return minutes * 60
     }
 
     /// A quiet room means the conversation is over, whether or not anyone said so.

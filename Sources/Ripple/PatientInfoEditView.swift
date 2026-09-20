@@ -22,6 +22,7 @@ struct PatientInfoEditView: View {
     @State private var primaryContactName = ""
     @State private var primaryContactRelationship = ""
     @State private var primaryContactPhone = ""
+    @State private var sessionTimeoutMinutes: Double = 20
     @State private var hasLoadedDraft = false
 
     private var draftIsComplete: Bool {
@@ -42,6 +43,7 @@ struct PatientInfoEditView: View {
                             .font(Theme.font(12))
                             .foregroundStyle(Theme.tan)
                     }
+                    conversationSection
                     comfortTopicsSection
                 }
                 .padding(.horizontal, 20)
@@ -116,6 +118,31 @@ struct PatientInfoEditView: View {
                 Divider().overlay(Theme.border)
                 labeledField("Phone", text: $primaryContactPhone, placeholder: "+1 555 010 0100")
                     .keyboardType(.phonePad)
+            }
+        }
+    }
+
+    /// The only app-behavior setting exposed here, alongside the facts
+    /// themselves — how long a talking-out-loud session may run before it
+    /// closes itself, for privacy. Not a "fact" like the sections above, but
+    /// this is the one caregiver-only editing surface the app has.
+    private var conversationSection: some View {
+        RippleCard {
+            VStack(spacing: 14) {
+                Text("Conversation settings")
+                    .font(Theme.font(13, .semibold))
+                    .foregroundStyle(Theme.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Stepper(value: $sessionTimeoutMinutes, in: 5...60, step: 5) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Conversation length limit")
+                            .font(Theme.font(15))
+                            .foregroundStyle(Theme.foreground)
+                        Text("\(Int(sessionTimeoutMinutes)) minutes")
+                            .font(Theme.font(13))
+                            .foregroundStyle(Theme.mutedText)
+                    }
+                }
             }
         }
     }
@@ -197,6 +224,7 @@ struct PatientInfoEditView: View {
         primaryContactName = facts.primaryContactName
         primaryContactRelationship = facts.primaryContactRelationship
         primaryContactPhone = facts.primaryContactPhone
+        sessionTimeoutMinutes = facts.sessionTimeoutMinutes
         hasLoadedDraft = true
     }
 
@@ -210,6 +238,7 @@ struct PatientInfoEditView: View {
         facts.primaryContactName = primaryContactName.trimmingCharacters(in: .whitespacesAndNewlines)
         facts.primaryContactRelationship = primaryContactRelationship.trimmingCharacters(in: .whitespacesAndNewlines)
         facts.primaryContactPhone = primaryContactPhone.trimmingCharacters(in: .whitespacesAndNewlines)
+        facts.sessionTimeoutMinutes = sessionTimeoutMinutes
         facts.lastModified = .now
         dismiss()
     }

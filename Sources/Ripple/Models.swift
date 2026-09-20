@@ -263,6 +263,11 @@ final class GroundingFacts {
     var primaryContactName: String
     var primaryContactRelationship: String
     var primaryContactPhone: String
+    /// How long a talking-out-loud session may run before it closes itself,
+    /// for privacy — see `CompanionSession`. Caregiver-editable; the person
+    /// has no path to this setting. Defaulted so lightweight migration can
+    /// backfill rows written before this field existed.
+    var sessionTimeoutMinutes: Double = 20
     var lastModified: Date
 
     init(
@@ -274,6 +279,7 @@ final class GroundingFacts {
         primaryContactName: String,
         primaryContactRelationship: String,
         primaryContactPhone: String,
+        sessionTimeoutMinutes: Double = 20,
         lastModified: Date = .now
     ) {
         self.userName = userName
@@ -284,6 +290,7 @@ final class GroundingFacts {
         self.primaryContactName = primaryContactName
         self.primaryContactRelationship = primaryContactRelationship
         self.primaryContactPhone = primaryContactPhone
+        self.sessionTimeoutMinutes = sessionTimeoutMinutes
         self.lastModified = lastModified
     }
 
