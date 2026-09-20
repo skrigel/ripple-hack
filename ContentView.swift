@@ -10,7 +10,7 @@ enum AppTab: String, CaseIterable, Identifiable {
     var label: String {
         switch self {
         case .home: "Today"
-        case .past: "Past"
+        case .past: "Past events"
         case .people: "People"
         }
     }
@@ -142,7 +142,7 @@ struct ContentView: View {
     private var selectedScreen: some View {
         switch tab {
         case .home: HomeView()
-        case .past: RecentView()
+        case .past: PastEventsView()
         case .people: PeopleView()
         }
     }

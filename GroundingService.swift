@@ -40,26 +40,10 @@ enum GroundingService {
         return "\(formatter.string(from: date)) \(partOfDay(at: date, calendar: calendar))"
     }
 
-    /// The warm summary line: what just happened and what's coming, or nothing.
-    /// Both halves come from the event log — never from the model.
-    static func presentSummary(
-        recent: Event?,
-        upcoming: Event?,
-        at date: Date,
-        calendar: Calendar = .current
-    ) -> String {
-        let pieces = [
-            recent.map { "\(sentenceCased($0.title)) \(relativePast(from: $0.when, to: date))." },
-            upcoming.map { "\($0.title) at \(timeOfDay($0.when, calendar: calendar)) — \(relativeFuture(from: date, to: $0.when))." },
-        ].compactMap { $0 }
-
-        return pieces.isEmpty ? "Nothing is needed right now. You are safe and settled." : pieces.joined(separator: " ")
-    }
-
     // MARK: List intros
 
     static let todayIntro = "Here is your day."
-    static let recentIntro = "Here is what has happened over the past few days."
+    static let pastEventsIntro = "Here is everything that's happened."
 
     // MARK: Retrieval
     //
@@ -82,26 +66,6 @@ enum GroundingService {
             .sorted { $0.when > $1.when }
             .prefix(limit)
             .map { $0 }
-    }
-
-    /// How many days back the Past tab reaches. The store keeps more than this
-    /// — the window is a kindness on screen, not a limit on what the app knows.
-    /// A wall of months would read as a ledger to answer to.
-    static let recentWindowDays = 7
-
-    /// Days before today, within the recent window, most recent first.
-    static func recent(
-        _ events: [Event],
-        before date: Date,
-        within days: Int = recentWindowDays,
-        calendar: Calendar = .current
-    ) -> [Event] {
-        let startOfToday = calendar.startOfDay(for: date)
-        let earlier = past(events, before: startOfToday)
-        guard let cutoff = calendar.date(byAdding: .day, value: -days, to: startOfToday) else {
-            return earlier
-        }
-        return earlier.filter { $0.when >= cutoff }
     }
 
     /// What is still to come, soonest first.

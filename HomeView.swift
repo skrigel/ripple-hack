@@ -54,25 +54,6 @@ struct HomeView: View {
                     .padding(.vertical, 8)
                 }
 
-                RippleCard {
-                    HStack(alignment: .top, spacing: 14) {
-                        IconChip(systemName: "heart.fill", background: Theme.sageSoft, tint: Theme.sage)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Nothing needed right now")
-                                .font(Theme.font(16, .medium))
-                                .foregroundStyle(Theme.foreground)
-                            Text(GroundingService.presentSummary(
-                                recent: GroundingService.past(events, before: now, limit: 1).first,
-                                upcoming: GroundingService.upcoming(events, after: now, limit: 1).first,
-                                at: now
-                            ))
-                            .font(Theme.font(14))
-                            .foregroundStyle(Theme.mutedText)
-                            .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
-
                 if let facts = groundingFacts {
                     RippleCard {
                         HStack(spacing: 12) {
@@ -104,22 +85,11 @@ struct HomeView: View {
             )
 
             VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Text(GroundingService.todayIntro)
-                        .font(Theme.font(14, .medium))
-                        .foregroundStyle(Theme.mutedText)
-                    Spacer()
-                    if currentCaregiver != nil {
-                        Button { eventFormMode = .create } label: {
-                            Image(systemName: "plus.circle.fill")
-                                .font(.system(size: 18))
-                                .foregroundStyle(Theme.sage)
-                        }
-                        .accessibilityLabel("Add an event")
-                    }
-                }
-                .padding(.horizontal, 4)
-                .padding(.bottom, 2)
+                Text(GroundingService.todayIntro)
+                    .font(Theme.font(14, .medium))
+                    .foregroundStyle(Theme.mutedText)
+                    .padding(.horizontal, 4)
+                    .padding(.bottom, 2)
 
                 ForEach(entries) { entry in
                     TimelineRow(
@@ -168,15 +138,16 @@ private struct TimelineRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
-            if hasHappened {
-                IconChip(systemName: icon, diameter: 28,
-                         background: Theme.sageSoft, tint: Theme.sage)
-            } else {
-                Text(GroundingService.timeOfDay(entry.when))
-                    .font(Theme.font(12, .semibold))
-                    .foregroundStyle(Theme.sage)
-                    .frame(width: 64, alignment: .leading)
-            }
+            Circle()
+                .fill(hasHappened ? Theme.sage : Theme.coral)
+                .frame(width: 10, height: 10)
+                .padding(.top, 6)
+                .accessibilityHidden(true)
+
+            Text(GroundingService.timeOfDay(entry.when))
+                .font(Theme.font(12, .semibold))
+                .foregroundStyle(Theme.mutedText)
+                .frame(width: 64, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
@@ -200,12 +171,6 @@ private struct TimelineRow: View {
                 }
                 .accessibilityLabel("Edit event")
             }
-
-            if hasHappened {
-                Text(GroundingService.timeOfDay(entry.when))
-                    .font(Theme.font(12))
-                    .foregroundStyle(Theme.mutedText)
-            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -225,19 +190,6 @@ private struct TimelineRow: View {
         switch entry {
         case .event(let event): event.detail
         case .conversation: "Still talking"
-        }
-    }
-
-    private var icon: String {
-        switch entry {
-        case .event(let event):
-            switch event.source {
-            case .caregiverNote: "note.text"
-            case .conversation: "bubble.left.and.bubble.right.fill"
-            case .confirmation: "checkmark"
-            }
-        case .conversation:
-            "waveform"
         }
     }
 }

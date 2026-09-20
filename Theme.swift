@@ -19,6 +19,7 @@ enum Theme {
     static let sageSoft = Color(hex: 0xEAF3F0)      // sage tint background
     static let tan = Color(hex: 0xC5B89A)           // accent
     static let tanSoft = Color(hex: 0xF5F0E8)       // tan tint background
+    static let coral = Color(hex: 0xD98C8C)         // "not yet happened" status dot
 
     // Night mode
     static let nightBackground = Color(hex: 0x1A1E2A)

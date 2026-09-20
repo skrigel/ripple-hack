@@ -1,14 +1,14 @@
 import SwiftUI
 import SwiftData
 
-/// "Past" — the last few days of the event log, grouped by day.
+/// "Past events" — everything that has already happened, grouped by day,
+/// most recent day first.
 ///
-/// Home covers today; this is the short memory just behind it, bounded to
-/// `GroundingService.recentWindowDays`. The store holds more and the assistant
-/// can still reach it — this screen stays small on purpose. A recall aid, not a
-/// complete record: gaps are expected and fine, so it never implies anything is
-/// missing.
-struct RecentView: View {
+/// Unlike Home (which shows only today, past and future), this is the
+/// complete history: every event with `when` before now, regardless of how
+/// long ago. A caregiver adds new entries here, and can correct any of them —
+/// the patient's own view has neither affordance.
+struct PastEventsView: View {
     @Environment(\.currentCaregiver) private var currentCaregiver
     @Query(sort: \Event.when, order: .reverse) private var events: [Event]
 
@@ -16,14 +16,25 @@ struct RecentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            Text(GroundingService.recentIntro)
-                .font(Theme.font(14))
-                .foregroundStyle(Theme.mutedText)
-                .padding(.horizontal, 4)
+            HStack {
+                Text(GroundingService.pastEventsIntro)
+                    .font(Theme.font(14))
+                    .foregroundStyle(Theme.mutedText)
+                Spacer()
+                if currentCaregiver != nil {
+                    Button { eventFormMode = .create } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 18))
+                            .foregroundStyle(Theme.sage)
+                    }
+                    .accessibilityLabel("Add an event")
+                }
+            }
+            .padding(.horizontal, 4)
 
             if days.isEmpty {
                 RippleCard {
-                    Text("Nothing from the past few days yet. That's perfectly fine.")
+                    Text("Nothing has happened yet. That's perfectly fine.")
                         .font(Theme.font(14))
                         .foregroundStyle(Theme.mutedText)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -92,10 +103,11 @@ struct RecentView: View {
 
     // MARK: - Derived data
 
-    /// The recent window before today, newest day first.
+    /// Every event before now, grouped by day, most recent day first, each
+    /// day's events listed most recent first.
     private var days: [(day: Date, events: [Event])] {
         let calendar = Calendar.current
-        let earlier = GroundingService.recent(events, before: .now, calendar: calendar)
+        let earlier = GroundingService.past(events, before: .now)
 
         return Dictionary(grouping: earlier) { calendar.startOfDay(for: $0.when) }
             .map { (day: $0.key, events: $0.value.sorted { $0.when > $1.when }) }
@@ -112,7 +124,7 @@ struct RecentView: View {
 }
 
 #Preview {
-    ScrollView { RecentView() }
+    ScrollView { PastEventsView() }
         .background(Theme.background)
         .modelContainer(previewContainer)
 }
