@@ -88,7 +88,14 @@ final class ComprehensionEngine {
     /// any failure; there is nothing to fall back to, which is fine — a
     /// session with no model available simply adds no events, same as one
     /// where nothing worth remembering was said.
-    func extractEvents(transcript: String, people: [Person]) async -> [CandidateEvent] {
+    ///
+    /// `knownContext` is `GroundingDigest.promptContext` — what a caregiver
+    /// has already put on record. Telling the model this before it reads the
+    /// transcript is the first hallucination guardrail: it is asked not to
+    /// repeat or contradict what is already known, rather than being left to
+    /// invent independently. The second guardrail is deterministic and lives
+    /// in `CompanionSession.makeEvent` — this prompt is a nudge, not a proof.
+    func extractEvents(transcript: String, people: [Person], knownContext: String) async -> [CandidateEvent] {
         #if canImport(FoundationModels)
         guard #available(iOS 26, *), capability == .onDevice else { return [] }
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -98,6 +105,10 @@ final class ComprehensionEngine {
             let roster = people.map(\.name).joined(separator: ", ")
             let result = try await session.respond(
                 to: """
+                Already known and confirmed by a caregiver — do not repeat these as new \
+                events, and do not say anything that contradicts them:
+                \(knownContext.isEmpty ? "(nothing recorded yet)" : knownContext)
+
                 People in their life: \(roster.isEmpty ? "(none recorded)" : roster)
                 Transcript of a conversation:
                 \(trimmed)
@@ -146,7 +157,8 @@ final class ComprehensionEngine {
         CandidateEvent(
             title: generable.title,
             timing: generable.timing == .past ? .past : .upcoming,
-            statedWhen: generable.statedWhen
+            statedWhen: generable.statedWhen,
+            mentionedPeople: generable.mentionedPeople
         )
     }
 
@@ -171,12 +183,15 @@ final class ComprehensionEngine {
     private static let eventExtractionInstructions = """
     You read a transcript of a conversation with an older person and pull out \
     distinct events worth remembering later: things that already happened, \
-    plans, visits, or news. Skip greetings and small talk — if nothing in the \
-    conversation is worth remembering, return no events. For each one, write a \
-    short plain-language title in the third person, say whether it already \
-    happened or is still to come, and copy any specific day or time that was \
-    stated exactly as said. Leave the time blank if none was given, and never \
-    invent one.
+    plans, visits, or news. You are given what a caregiver has already \
+    confirmed — never repeat one of those as if it were new, and never say \
+    anything that disagrees with it. Skip greetings and small talk — if \
+    nothing in the conversation is worth remembering, return no events. For \
+    each one, write a short plain-language title in the third person, say \
+    whether it already happened or is still to come, copy any specific day or \
+    time that was stated exactly as said (leave it blank if none was given, \
+    and never invent one), and list which people from the given list, if any, \
+    it involves.
     """
     #endif
 }
